@@ -1,0 +1,22 @@
+# Core ETL
+requests
+beautifulsoup4
+lxml # Parser efisien untuk BeautifulSoup
+pandas # Sangat membantu untuk Transform dan Load
+
+# Google Sheets
+gspread
+google-auth
+google-auth-oauthlib
+google-auth-httplib2
+
+# PostgreSQL
+psycopg2-binary # Atau psycopg2 jika Anda handle C dependencies
+
+# Configuration
+python-dotenv
+
+# Testing
+pytest
+pytest-cov
+requests-mock # Untuk mock HTTP requests di test_extract
