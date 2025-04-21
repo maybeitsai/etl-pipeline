@@ -56,9 +56,7 @@ def load_configuration() -> Dict[str, Any]:
         # Use a sensible default if not set or invalid
         config["max_pages"] = int(os.getenv("MAX_PAGES_TO_SCRAPE", "50"))
     except ValueError:
-        logging.warning(
-            "Invalid MAX_PAGES_TO_SCRAPE value. Using default: 50"
-        )
+        logging.warning("Invalid MAX_PAGES_TO_SCRAPE value. Using default: 50")
         config["max_pages"] = 50
 
     # --- Load Target Configuration ---
@@ -105,9 +103,7 @@ def _run_extraction(config: Dict[str, Any]) -> Optional[list]:
         config["max_pages"],
     )
     try:
-        all_extracted_data = scrape_all_pages(
-            config["source_url"], config["max_pages"]
-        )
+        all_extracted_data = scrape_all_pages(config["source_url"], config["max_pages"])
         if not all_extracted_data:
             logging.warning("Extraction yielded no data.")
             return None
@@ -150,9 +146,7 @@ def _run_transformation(extracted_data: list) -> Optional[pd.DataFrame]:
         return None
 
 
-def _load_data_to_csv(
-    dataframe: pd.DataFrame, config: Dict[str, Any]
-) -> None:
+def _load_data_to_csv(dataframe: pd.DataFrame, config: Dict[str, Any]) -> None:
     """Loads data to a CSV file."""
     filepath = config["csv_filepath"]
     logging.info("Attempting to load data to CSV file: %s", filepath)
@@ -168,9 +162,7 @@ def _load_data_to_csv(
         )
 
 
-def _load_data_to_gsheets(
-    dataframe: pd.DataFrame, config: Dict[str, Any]
-) -> None:
+def _load_data_to_gsheets(dataframe: pd.DataFrame, config: Dict[str, Any]) -> None:
     """Loads data to Google Sheets if configured."""
     gsheets_config = config["gsheets"]
     if not gsheets_config["enabled"]:
@@ -197,9 +189,7 @@ def _load_data_to_gsheets(
         worksheet_name,
     )
     try:
-        if load_to_gsheets(
-            dataframe, credentials_path, sheet_id, worksheet_name
-        ):
+        if load_to_gsheets(dataframe, credentials_path, sheet_id, worksheet_name):
             logging.info("Successfully loaded data to Google Sheets.")
         else:
             logging.error("Failed to load data to Google Sheets.")
@@ -209,15 +199,11 @@ def _load_data_to_gsheets(
         )
 
 
-def _load_data_to_postgres(
-    dataframe: pd.DataFrame, config: Dict[str, Any]
-) -> None:
+def _load_data_to_postgres(dataframe: pd.DataFrame, config: Dict[str, Any]) -> None:
     """Loads data to PostgreSQL if configured."""
     postgres_config = config["postgres"]
     if not postgres_config["enabled"]:
-        logging.info(
-            "Skipping PostgreSQL load: Database configuration is incomplete."
-        )
+        logging.info("Skipping PostgreSQL load: Database configuration is incomplete.")
         return
 
     db_conn_info = postgres_config["db_config"]
@@ -253,7 +239,9 @@ def run_pipeline(config: Dict[str, Any]) -> None:
     # --- Extract ---
     extracted_data = _run_extraction(config)
     if not extracted_data:
-        logging.warning("Extraction step failed or yielded no data. Pipeline terminating.")
+        logging.warning(
+            "Extraction step failed or yielded no data. Pipeline terminating."
+        )
         return
 
     # --- Transform ---
@@ -291,4 +279,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-    
