@@ -275,107 +275,107 @@ def transform_data(extracted_data: List[Dict[str, Optional[str]]]) -> pd.DataFra
 
 
 # --- Example Usage ---
-if __name__ == "__main__":
-    # Sample data mimicking extract output
-    sample_extracted_data = [
-        {
-            "title": " T-shirt 1 ",
-            "price": "$10.00",
-            "rating": "⭐ 4.5 / 5",
-            "colors": "3 colors",
-            "size": " M ",
-            "gender": " Men",
-            "image_url": "url1",
-        },
-        {
-            "title": "Pants 2",
-            "price": "$25.50",
-            "rating": "⭐ 3.8 / 5",
-            "colors": "5 colors",
-            "size": "L",
-            "gender": "Women",
-            "image_url": "url2",
-        },
-        {
-            "title": " T-shirt 1 ",
-            "price": "$10.00",
-            "rating": "⭐ 4.5 / 5",
-            "colors": "3 colors",
-            "size": " M ",
-            "gender": " Men",
-            "image_url": "url1",
-        },
-        {
-            "title": "Jacket 3",
-            "price": "Price Unavailable",
-            "rating": "⭐ 4.0 / 5",
-            "colors": "2 colors",
-            "size": "S",
-            "gender": "Unisex",
-            "image_url": "url3",
-        },
-        {
-            "title": "Unknown Product",
-            "price": "$50.00",
-            "rating": "⭐ 5.0 / 5",
-            "colors": "1 Color",
-            "size": "XL",
-            "gender": "Men",
-            "image_url": "url4",
-        },
-        {
-            "title": "Shoes 5",
-            "price": "$120.00",
-            "rating": "Not Rated",
-            "colors": "4 colors",
-            "size": "M",
-            "gender": "Women",
-            "image_url": "url5",
-        },
-        {
-            "title": "Hat 6",
-            "price": "$15.00",
-            "rating": "⭐ 4.2 / 5",
-            "colors": None,
-            "size": "OS",
-            "gender": "Unisex",
-            "image_url": "url6",
-        },
-        {
-            "title": "Belt 7",
-            "price": "$30.00",
-            "rating": "⭐ 4.9 / 5",
-            "colors": "1 color",
-            "size": None,
-            "gender": "Unisex",
-            "image_url": "url7",
-        },
-        {
-            "title": "Complete Item 8",
-            "price": "$75.00",
-            "rating": "⭐ 4.1 / 5",
-            "colors": "2 colors",
-            "size": "L",
-            "gender": "Men",
-            "image_url": "url8",
-        },
-        {
-            "title": "Item 9 No Img",
-            "price": "$40.00",
-            "rating": "⭐ 4.0 / 5",
-            "colors": "1 color",
-            "size": "M",
-            "gender": "Women",
-            "image_url": None,
-        },
-    ]
-    print("\n--- Transformation Example ---")
-    transformed_df = transform_data(sample_extracted_data)
+# if __name__ == "__main__":
+#     # Sample data mimicking extract output
+#     sample_extracted_data = [
+#         {
+#             "title": " T-shirt 1 ",
+#             "price": "$10.00",
+#             "rating": "⭐ 4.5 / 5",
+#             "colors": "3 colors",
+#             "size": " M ",
+#             "gender": " Men",
+#             "image_url": "url1",
+#         },
+#         {
+#             "title": "Pants 2",
+#             "price": "$25.50",
+#             "rating": "⭐ 3.8 / 5",
+#             "colors": "5 colors",
+#             "size": "L",
+#             "gender": "Women",
+#             "image_url": "url2",
+#         },
+#         {
+#             "title": " T-shirt 1 ",
+#             "price": "$10.00",
+#             "rating": "⭐ 4.5 / 5",
+#             "colors": "3 colors",
+#             "size": " M ",
+#             "gender": " Men",
+#             "image_url": "url1",
+#         },
+#         {
+#             "title": "Jacket 3",
+#             "price": "Price Unavailable",
+#             "rating": "⭐ 4.0 / 5",
+#             "colors": "2 colors",
+#             "size": "S",
+#             "gender": "Unisex",
+#             "image_url": "url3",
+#         },
+#         {
+#             "title": "Unknown Product",
+#             "price": "$50.00",
+#             "rating": "⭐ 5.0 / 5",
+#             "colors": "1 Color",
+#             "size": "XL",
+#             "gender": "Men",
+#             "image_url": "url4",
+#         },
+#         {
+#             "title": "Shoes 5",
+#             "price": "$120.00",
+#             "rating": "Not Rated",
+#             "colors": "4 colors",
+#             "size": "M",
+#             "gender": "Women",
+#             "image_url": "url5",
+#         },
+#         {
+#             "title": "Hat 6",
+#             "price": "$15.00",
+#             "rating": "⭐ 4.2 / 5",
+#             "colors": None,
+#             "size": "OS",
+#             "gender": "Unisex",
+#             "image_url": "url6",
+#         },
+#         {
+#             "title": "Belt 7",
+#             "price": "$30.00",
+#             "rating": "⭐ 4.9 / 5",
+#             "colors": "1 color",
+#             "size": None,
+#             "gender": "Unisex",
+#             "image_url": "url7",
+#         },
+#         {
+#             "title": "Complete Item 8",
+#             "price": "$75.00",
+#             "rating": "⭐ 4.1 / 5",
+#             "colors": "2 colors",
+#             "size": "L",
+#             "gender": "Men",
+#             "image_url": "url8",
+#         },
+#         {
+#             "title": "Item 9 No Img",
+#             "price": "$40.00",
+#             "rating": "⭐ 4.0 / 5",
+#             "colors": "1 color",
+#             "size": "M",
+#             "gender": "Women",
+#             "image_url": None,
+#         },
+#     ]
+#     print("\n--- Transformation Example ---")
+#     transformed_df = transform_data(sample_extracted_data)
 
-    if not transformed_df.empty:
-        print("\n--- Transformation Output ---")
-        print(transformed_df.to_string())
-        print("\nFinal Data types:")
-        print(transformed_df.dtypes)
-    else:
-        print("\nTransformation resulted in an empty DataFrame.")
+#     if not transformed_df.empty:
+#         print("\n--- Transformation Output ---")
+#         print(transformed_df.to_string())
+#         print("\nFinal Data types:")
+#         print(transformed_df.dtypes)
+#     else:
+#         print("\nTransformation resulted in an empty DataFrame.")

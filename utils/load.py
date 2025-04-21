@@ -297,61 +297,61 @@ def load_to_postgres(
 
 
 # Example Usage (Optional - requires environment setup)
-if __name__ == "__main__":
-    # Create Sample DataFrame
-    sample_data = {
-        "title": ["Test Product 1", "Test Product 2"],
-        "price": [160000.00, 2392000.00],
-        "rating": [4.5, 3.8],
-        "colors": [3, 5],
-        "size": ["M", "L"],
-        "gender": ["Unisex", "Men"],
-        "image_url": ["url1", "url2"],
-        "timestamp": [
-            pd.Timestamp.now(tz="Asia/Jakarta"),
-            pd.Timestamp.now(tz="Asia/Jakarta"),
-        ],
-    }
-    sample_df = pd.DataFrame(sample_data).astype(
-        {
-            "title": str,
-            "price": float,
-            "rating": float,
-            "colors": int,
-            "size": str,
-            "gender": str,
-            "image_url": str,
-        }
-    )
+# if __name__ == "__main__":
+#     # Create Sample DataFrame
+#     sample_data = {
+#         "title": ["Test Product 1", "Test Product 2"],
+#         "price": [160000.00, 2392000.00],
+#         "rating": [4.5, 3.8],
+#         "colors": [3, 5],
+#         "size": ["M", "L"],
+#         "gender": ["Unisex", "Men"],
+#         "image_url": ["url1", "url2"],
+#         "timestamp": [
+#             pd.Timestamp.now(tz="Asia/Jakarta"),
+#             pd.Timestamp.now(tz="Asia/Jakarta"),
+#         ],
+#     }
+#     sample_df = pd.DataFrame(sample_data).astype(
+#         {
+#             "title": str,
+#             "price": float,
+#             "rating": float,
+#             "colors": int,
+#             "size": str,
+#             "gender": str,
+#             "image_url": str,
+#         }
+#     )
 
-    # --- Test CSV ---
-    CSV_TEST_FILE = "test_products_output.csv"
-    print(f"\n--- Testing CSV Load to {CSV_TEST_FILE} ---")
-    load_to_csv(sample_df, CSV_TEST_FILE)
+#     # --- Test CSV ---
+#     CSV_TEST_FILE = "test_products_output.csv"
+#     print(f"\n--- Testing CSV Load to {CSV_TEST_FILE} ---")
+#     load_to_csv(sample_df, CSV_TEST_FILE)
 
-    # --- Test Google Sheets (Requires setup) ---
-    print("\n--- Testing Google Sheets Load (requires env vars) ---")
-    CREDS_FILE = os.getenv("GOOGLE_SHEETS_CREDENTIALS_PATH")
-    SHEET_ID = os.getenv("GOOGLE_SHEET_ID")
-    WORKSHEET = os.getenv("WORKSHEET_NAME", WORKSHEET_NAME)
+#     # --- Test Google Sheets (Requires setup) ---
+#     print("\n--- Testing Google Sheets Load (requires env vars) ---")
+#     CREDS_FILE = os.getenv("GOOGLE_SHEETS_CREDENTIALS_PATH")
+#     SHEET_ID = os.getenv("GOOGLE_SHEET_ID")
+#     WORKSHEET = os.getenv("WORKSHEET_NAME", WORKSHEET_NAME)
 
-    if CREDS_FILE and os.path.exists(CREDS_FILE) and SHEET_ID:
-        load_to_gsheets(sample_df, CREDS_FILE, SHEET_ID, WORKSHEET)
-    else:
-        print("Skipping GSheets test: Env vars GOOGLE SHEET CREDENTIALS/ID missing.")
+#     if CREDS_FILE and os.path.exists(CREDS_FILE) and SHEET_ID:
+#         load_to_gsheets(sample_df, CREDS_FILE, SHEET_ID, WORKSHEET)
+#     else:
+#         print("Skipping GSheets test: Env vars GOOGLE SHEET CREDENTIALS/ID missing.")
 
-    # --- Test PostgreSQL (Requires setup) ---
-    print("\n--- Testing PostgreSQL Load (requires env vars) ---")
-    DB_PARAMS = {
-        "host": os.getenv("DB_HOST"),
-        "port": os.getenv("DB_PORT"),
-        "dbname": os.getenv("DB_NAME"),
-        "user": os.getenv("DB_USER"),
-        "password": os.getenv("DB_PASSWORD"),
-    }
-    TABLE_NAME = "test_load_products"
+#     # --- Test PostgreSQL (Requires setup) ---
+#     print("\n--- Testing PostgreSQL Load (requires env vars) ---")
+#     DB_PARAMS = {
+#         "host": os.getenv("DB_HOST"),
+#         "port": os.getenv("DB_PORT"),
+#         "dbname": os.getenv("DB_NAME"),
+#         "user": os.getenv("DB_USER"),
+#         "password": os.getenv("DB_PASSWORD"),
+#     }
+#     TABLE_NAME = "test_load_products"
 
-    if all(DB_PARAMS.values()):  # Basic check if all DB params are set
-        load_to_postgres(sample_df, DB_PARAMS, table_name=TABLE_NAME)
-    else:
-        print("Skipping PostgreSQL test: DB config incomplete in env vars.")
+#     if all(DB_PARAMS.values()):  # Basic check if all DB params are set
+#         load_to_postgres(sample_df, DB_PARAMS, table_name=TABLE_NAME)
+#     else:
+#         print("Skipping PostgreSQL test: DB config incomplete in env vars.")

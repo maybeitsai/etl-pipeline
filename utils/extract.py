@@ -237,25 +237,25 @@ def scrape_all_pages(base_url: str, max_pages: int) -> List[Dict[str, Optional[s
 
 
 # Example usage (optional, for testing module directly)
-if __name__ == "__main__":
-    # Define a test URL (replace if necessary)
-    TEST_BASE_URL = "https://fashion-studio.dicoding.dev"
-    MAX_TEST_PAGES = 2
+# if __name__ == "__main__":
+#     # Define a test URL (replace if necessary)
+#     TEST_BASE_URL = "https://fashion-studio.dicoding.dev"
+#     MAX_TEST_PAGES = 2
 
-    print(f"\n--- Testing Extraction on Base URL: {TEST_BASE_URL} ---")
-    extracted_data_all = scrape_all_pages(TEST_BASE_URL, MAX_TEST_PAGES)
+#     print(f"\n--- Testing Extraction on Base URL: {TEST_BASE_URL} ---")
+#     extracted_data_all = scrape_all_pages(TEST_BASE_URL, MAX_TEST_PAGES)
 
-    if extracted_data_all:
-        print(f"\nSuccessfully extracted {len(extracted_data_all)} products in total.")
-        print("Sample of extracted data (first 2 products):")
-        for i, prod in enumerate(extracted_data_all[:2]):
-            print(f"Product {i+1}: {prod}")
-    else:
-        print("\nExtraction process completed, but no products were extracted.")
+#     if extracted_data_all:
+#         print(f"\nSuccessfully extracted {len(extracted_data_all)} products in total.")
+#         print("Sample of extracted data (first 2 products):")
+#         for i, prod in enumerate(extracted_data_all[:2]):
+#             print(f"Product {i+1}: {prod}")
+#     else:
+#         print("\nExtraction process completed, but no products were extracted.")
 
-    print("\n--- Testing Single Page Extraction (Page 1) ---")
-    extracted_page1 = extract_product_data(TEST_BASE_URL + "/")
-    if extracted_page1 is not None:
-        print(f"Extracted {len(extracted_page1)} products from page 1.")
-    else:
-        print("Extraction failed for page 1.")
+#     print("\n--- Testing Single Page Extraction (Page 1) ---")
+#     extracted_page1 = extract_product_data(TEST_BASE_URL + "/")
+#     if extracted_page1 is not None:
+#         print(f"Extracted {len(extracted_page1)} products from page 1.")
+#     else:
+#         print("Extraction failed for page 1.")
