@@ -1,79 +1,115 @@
+# main.py
 import os
-from dotenv import load_dotenv
 import logging
-
-# Import fungsi dari modul utils
-from utils.extract import extract_products
+from dotenv import load_dotenv
+from utils.extract import scrape_all_pages
 from utils.transform import transform_data
-from utils.load import load_to_csv, load_to_gsheet, load_to_postgres
+from utils.load import load_to_csv, load_to_gsheets, load_to_postgres
 
-# Konfigurasi logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
+)
 
-def main():
-    # Muat variabel lingkungan dari .env
-    load_dotenv()
-    logging.info("Variabel lingkungan dimuat.")
+# Load environment variables from .env file
+load_dotenv()
 
-    # Konfigurasi dari environment variables
-    target_url = "https://fashion-studio.dicoding.dev" # Atau ambil dari env jika perlu
-    csv_output_file = "products.csv"
-    gsheet_key = os.getenv('GSPREAD_SHEET_KEY')
-    gsheet_creds_path = os.getenv('GSPREAD_SERVICE_ACCOUNT_FILE')
-    gsheet_worksheet_name = "Produk Kompetitor" # Nama worksheet yang diinginkan
+# Configuration
+SOURCE_URL = os.getenv("SOURCE_URL")
+MAX_PAGES_TO_SCRAPE = 50
+CSV_FILEPATH = os.getenv("CSV_FILEPATH", "products.csv")
+GOOGLE_SHEETS_CREDENTIALS_PATH = os.getenv("GOOGLE_SHEETS_CREDENTIALS_PATH")
+GOOGLE_SHEET_ID = os.getenv("GOOGLE_SHEET_ID")
+WORKSHEET_NAME = os.getenv("WORKSHEET_NAME", "products")
 
-    db_config = {
-        'host': os.getenv('DB_HOST'),
-        'port': os.getenv('DB_PORT'),
-        'dbname': os.getenv('DB_NAME'),
-        'user': os.getenv('DB_USER'),
-        'password': os.getenv('DB_PASSWORD'),
-    }
-    db_table_name = "products" # Sesuaikan dengan nama tabel Anda
+DB_CONFIG = {
+    "host": os.getenv("DB_HOST"),
+    "port": os.getenv("DB_PORT"),
+    "dbname": os.getenv("DB_NAME"),
+    "user": os.getenv("DB_USER"),
+    "password": os.getenv("DB_PASSWORD"),
+}
+POSTGRES_TABLE_NAME = "products"
 
-    logging.info("--- Memulai Pipeline ETL ---")
 
-    # 1. Extract
-    logging.info(f"Memulai ekstraksi dari {target_url}")
-    raw_data = extract_products(target_url)
-    if not raw_data:
-        logging.error("Ekstraksi gagal atau tidak menghasilkan data. Pipeline berhenti.")
+def run_pipeline():
+    """Runs the full ETL pipeline with pagination."""
+    logging.info("Starting ETL pipeline...")
+
+    # --- Extract (dengan Pagination) ---
+    logging.info(
+        f"Starting scraping from {SOURCE_URL} up to {MAX_PAGES_TO_SCRAPE} pages..."
+    )
+    # Panggil fungsi scrape_all_pages
+    all_extracted_data = scrape_all_pages(SOURCE_URL, MAX_PAGES_TO_SCRAPE)
+
+    if not all_extracted_data:
+        logging.warning("No data extracted from any page. Pipeline finished.")
         return
-    logging.info(f"Ekstraksi berhasil, {len(raw_data)} produk mentah ditemukan.")
 
-    # 2. Transform
-    logging.info("Memulai transformasi data.")
-    transformed_df = transform_data(raw_data)
+    logging.info(
+        f"Extraction complete. Total items extracted: {len(all_extracted_data)}"
+    )
+
+    # --- Transform ---
+    logging.info("Transforming extracted data...")
+    # Gunakan data gabungan dari semua halaman
+    transformed_df = transform_data(all_extracted_data)
+    if transformed_df is None:
+        logging.error("Transformation failed. Aborting pipeline.")
+        return
     if transformed_df.empty:
-        logging.error("Transformasi gagal atau menghasilkan DataFrame kosong. Pipeline berhenti.")
+        logging.warning(
+            "Transformation resulted in an empty DataFrame. Check extraction/transformation logic."
+        )
         return
-    logging.info("Transformasi data berhasil.")
-    # logging.info("Preview data setelah transformasi:\n" + transformed_df.head().to_string())
 
+    logging.info(f"Transformation complete. Processed {len(transformed_df)} products.")
+    logging.info(
+        "Sample transformed data:\n" + transformed_df.head().to_string()
+    )  # Tampilkan head()
 
-    # 3. Load
-    logging.info("Memulai proses load data.")
+    # --- Load ---
+    logging.info("Starting data loading phase...")
 
-    # Load ke CSV
-    load_to_csv(transformed_df, csv_output_file)
-
-    # Load ke Google Sheets
-    if gsheet_key and gsheet_creds_path and os.path.exists(gsheet_creds_path):
-        load_to_gsheet(transformed_df, gsheet_key, gsheet_creds_path, gsheet_worksheet_name)
+    # Load to CSV
+    if load_to_csv(transformed_df, CSV_FILEPATH):
+        logging.info(f"Successfully loaded data to {CSV_FILEPATH}")
     else:
-        logging.warning("Skipping load ke Google Sheets: GSPREAD_SHEET_KEY atau GSPREAD_SERVICE_ACCOUNT_FILE tidak valid/tidak ditemukan.")
+        logging.error(f"Failed to load data to {CSV_FILEPATH}")
 
-    # Load ke PostgreSQL
-    # Cek apakah semua konfigurasi DB ada
-    if all(db_config.values()):
-        load_to_postgres(transformed_df, db_config, db_table_name)
+    # Load to Google Sheets
+    if GOOGLE_SHEET_ID and os.path.exists(GOOGLE_SHEETS_CREDENTIALS_PATH):
+        if load_to_gsheets(
+            transformed_df,
+            GOOGLE_SHEETS_CREDENTIALS_PATH,
+            GOOGLE_SHEET_ID,
+            WORKSHEET_NAME,
+        ):
+            logging.info(
+                f"Successfully loaded data to Google Sheet ID: {GOOGLE_SHEET_ID}"
+            )
+        else:
+            logging.error("Failed to load data to Google Sheets.")
     else:
-        logging.warning("Skipping load ke PostgreSQL: Konfigurasi database tidak lengkap di .env.")
+        logging.warning(
+            "Skipping Google Sheets load: Sheet ID not set in .env or credentials file missing."
+        )
 
-    logging.info("--- Pipeline ETL Selesai ---")
+    # Load to PostgreSQL
+    if all(val is not None for val in DB_CONFIG.values()):
+        if load_to_postgres(transformed_df, DB_CONFIG, POSTGRES_TABLE_NAME):
+            logging.info(
+                f"Successfully loaded data to PostgreSQL table: {POSTGRES_TABLE_NAME}"
+            )
+        else:
+            logging.error("Failed to load data to PostgreSQL.")
+    else:
+        logging.warning(
+            "Skipping PostgreSQL load: Database configuration is incomplete in .env."
+        )
+
+    logging.info("ETL pipeline finished.")
+
 
 if __name__ == "__main__":
-    try:
-        main()
-    except Exception as e:
-        logging.critical(f"Terjadi error tidak terduga di pipeline utama: {e}", exc_info=True)
+    run_pipeline()
