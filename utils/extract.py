@@ -10,16 +10,49 @@ from typing import Dict, List, Optional
 
 import requests
 from bs4 import BeautifulSoup
+from requests.exceptions import RequestException, Timeout
 
 from utils.constants import LOG_FORMAT, REQUEST_DELAY, REQUEST_TIMEOUT, USER_AGENT
 
 logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
 
 
+def _parse_product_details(
+    details_container: BeautifulSoup, product_info: Dict[str, Optional[str]]
+) -> None:
+    """Parses rating, colors, size, and gender from the details container."""
+    detail_paragraphs = details_container.find_all("p")
+    found_details = set()
+    for paragraph in detail_paragraphs:
+        text = paragraph.text.strip()
+        if "Rating:" in text and "rating" not in found_details:
+            product_info["rating"] = text.split("Rating:", 1)[-1].strip()
+            found_details.add("rating")
+        elif "Colors" in text and "colors" not in found_details:
+            product_info["colors"] = text  # Keep "N Colors" format
+            found_details.add("colors")
+        elif "Size:" in text and "size" not in found_details:
+            product_info["size"] = text.split("Size:", 1)[-1].strip()
+            found_details.add("size")
+        elif "Gender:" in text and "gender" not in found_details:
+            product_info["gender"] = text.split("Gender:", 1)[-1].strip()
+            found_details.add("gender")
+
+
 def _parse_product_card(
     card: BeautifulSoup, url: str
 ) -> Optional[Dict[str, Optional[str]]]:
-    """Parses a single product card BeautifulSoup object."""
+    """
+    Parses a single product card BeautifulSoup object into a dictionary.
+
+    Args:
+        card: The BeautifulSoup object representing the product card.
+        url: The URL of the page where the card was found (for logging).
+
+    Returns:
+        A dictionary containing product information, or None if essential
+        information (like title) is missing.
+    """
     product_info: Dict[str, Optional[str]] = {
         "title": None,
         "price": None,
@@ -32,9 +65,9 @@ def _parse_product_card(
 
     # Extract Product Name (Mandatory)
     title_tag = card.find("h3", class_="product-title")
-    if not title_tag:
+    if not title_tag or not title_tag.text.strip():
         logging.warning(
-            "Could not find product title for a card on %s. Skipping card.", url
+            "Could not find valid product title for a card on %s. Skipping card.", url
         )
         return None
     product_info["title"] = title_tag.text.strip()
@@ -44,6 +77,7 @@ def _parse_product_card(
     if price_tag:
         product_info["price"] = price_tag.text.strip()
     else:
+        # Check for explicit "Price Unavailable" text
         price_unavailable_tag = card.find("p", class_="price")
         if price_unavailable_tag and "Price Unavailable" in price_unavailable_tag.text:
             product_info["price"] = "Price Unavailable"
@@ -68,17 +102,7 @@ def _parse_product_card(
     # Extract Details (Rating, Colors, Size, Gender)
     details_container = card.find("div", class_="product-details")
     if details_container:
-        detail_paragraphs = details_container.find_all("p")
-        for paragraph in detail_paragraphs:
-            text = paragraph.text.strip()
-            if "Rating:" in text:
-                product_info["rating"] = text.split("Rating:", 1)[-1].strip()
-            elif "Colors" in text:
-                product_info["colors"] = text  # Keep "N Colors" format
-            elif "Size:" in text:
-                product_info["size"] = text.split("Size:", 1)[-1].strip()
-            elif "Gender:" in text:
-                product_info["gender"] = text.split("Gender:", 1)[-1].strip()
+        _parse_product_details(details_container, product_info)
     else:
         logging.warning(
             "Could not find 'product-details' div for product '%s' on %s.",
@@ -99,7 +123,7 @@ def extract_product_data(url: str) -> Optional[List[Dict[str, Optional[str]]]]:
     Returns:
         A list of dictionaries, where each dictionary contains data for one product.
         Returns None if the request fails (e.g., timeout, HTTP error).
-        Returns an empty list if the page structure is unexpected or no products are found.
+        Returns an empty list if the page structure is unexpected or no products found.
     """
     products = []
     try:
@@ -107,11 +131,11 @@ def extract_product_data(url: str) -> Optional[List[Dict[str, Optional[str]]]]:
         response = requests.get(url, headers=headers, timeout=REQUEST_TIMEOUT)
         response.raise_for_status()  # Raises HTTPError for bad responses (4XX, 5XX)
         logging.info("Successfully fetched HTML content from %s", url)
-    except requests.exceptions.Timeout:
+    except Timeout:
         logging.error("Timeout occurred while fetching URL %s", url)
         return None
-    except requests.exceptions.RequestException as e:
-        logging.error("Error fetching URL %s: %s", url, e)
+    except RequestException as e:
+        logging.error("Request failed for URL %s: %s", url, e)
         return None
 
     try:
@@ -120,16 +144,15 @@ def extract_product_data(url: str) -> Optional[List[Dict[str, Optional[str]]]]:
 
         if not collection_list:
             logging.warning(
-                "Could not find collection list div with id='collectionList' on page %s.",
+                "Could not find collection list div with id='collectionList' on %s.",
                 url,
             )
-            return []  # Return empty list, not None, as the page was fetched
+            return []  # Return empty list, as page was fetched but structure differs
 
         product_cards = collection_list.find_all("div", class_="collection-card")
         if not product_cards:
             logging.warning(
-                "Found collection list div, but no product cards inside on page %s.",
-                url,
+                "Found collection list, but no product cards inside on page %s.", url
             )
             return []
 
@@ -140,8 +163,10 @@ def extract_product_data(url: str) -> Optional[List[Dict[str, Optional[str]]]]:
             if product_data:
                 products.append(product_data)
 
-    except Exception as e:
-        # Catch potential parsing errors
+    # Catching a broad exception during parsing is often necessary due to
+    # unpredictable HTML structures or potential BS4/parser issues.
+    # Use exc_info=True for detailed traceback in logs.
+    except Exception as e:  # pylint: disable=broad-except
         logging.error(
             "An error occurred during HTML parsing on page %s: %s",
             url,
@@ -162,8 +187,8 @@ def scrape_all_pages(base_url: str, max_pages: int) -> List[Dict[str, Optional[s
     Scrapes product data from multiple pages of the website.
 
     Args:
-        base_url: The base URL of the website (e.g., "https://fashion-studio.dicoding.dev").
-        max_pages: The maximum number of pages to attempt scraping.
+        base_url: The base URL (e.g., "https://fashion-studio.dicoding.dev").
+        max_pages: The maximum number of pages to scrape.
 
     Returns:
         A list containing product data aggregated from all successfully scraped pages.
@@ -182,37 +207,29 @@ def scrape_all_pages(base_url: str, max_pages: int) -> List[Dict[str, Optional[s
 
         if page_data is None:
             logging.error(
-                "Failed to fetch or process page %d (%s). Skipping page.",
-                page_num,
-                current_url,
+                "Failed to fetch/process page %d (%s). Skipping.", page_num, current_url
             )
-            # Continue to the next page attempt, maybe it's a temporary issue
-            time.sleep(REQUEST_DELAY)  # Still wait before next attempt
-            continue
-
-        if not page_data:
+        elif not page_data:
             logging.warning(
-                "No products found on page %d (%s). "
-                "This might indicate the end of results or a page structure issue.",
+                "No products found on page %d (%s). Possibly end of results.",
                 page_num,
                 current_url,
             )
-            # Decide whether to stop early if no products found for consecutive pages?
-            # For now, continue up to max_pages as requested.
+            # Could add logic here to break early if desired
+        else:
+            all_products.extend(page_data)
+            logging.info(
+                "Accumulated %d products after scraping page %d.",
+                len(all_products),
+                page_num,
+            )
 
-        all_products.extend(page_data)
-        logging.info(
-            "Accumulated %d products after scraping page %d.",
-            len(all_products),
-            page_num,
-        )
-
-        # Add delay between requests to avoid overwhelming the server
-        if page_num < max_pages:
+        # Delay only if not the last page and if scraping continues
+        if page_num < max_pages and page_data is not None:
             time.sleep(REQUEST_DELAY)
 
     logging.info(
-        "Finished scraping up to %d pages. Total products extracted: %d",
+        "Finished scraping %d pages. Total products extracted: %d",
         max_pages,
         len(all_products),
     )
@@ -230,8 +247,8 @@ if __name__ == "__main__":
 
     if extracted_data_all:
         print(f"\nSuccessfully extracted {len(extracted_data_all)} products in total.")
-        print("Sample of extracted data (first 5 products):")
-        for i, prod in enumerate(extracted_data_all[:5]):
+        print("Sample of extracted data (first 2 products):")
+        for i, prod in enumerate(extracted_data_all[:2]):
             print(f"Product {i+1}: {prod}")
     else:
         print("\nExtraction process completed, but no products were extracted.")
