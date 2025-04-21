@@ -1,3 +1,4 @@
 .env
 google-sheets-api.json
 submission.txt
+*.pyc
