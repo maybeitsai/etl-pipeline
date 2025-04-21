@@ -1,243 +1,244 @@
 # utils/extract.py
+"""
+Module for extracting product data from the Fashion Studio website.
+Handles fetching HTML content and parsing product information, including pagination.
+"""
+
+import logging
+import time
+from typing import Dict, List, Optional
+
 import requests
 from bs4 import BeautifulSoup
-import logging
-from typing import List, Dict, Optional
-import time
 
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
-)
+from utils.constants import LOG_FORMAT, REQUEST_DELAY, REQUEST_TIMEOUT, USER_AGENT
+
+logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
+
+
+def _parse_product_card(
+    card: BeautifulSoup, url: str
+) -> Optional[Dict[str, Optional[str]]]:
+    """Parses a single product card BeautifulSoup object."""
+    product_info: Dict[str, Optional[str]] = {
+        "title": None,
+        "price": None,
+        "rating": None,
+        "colors": None,
+        "size": None,
+        "gender": None,
+        "image_url": None,
+    }
+
+    # Extract Product Name (Mandatory)
+    title_tag = card.find("h3", class_="product-title")
+    if not title_tag:
+        logging.warning(
+            "Could not find product title for a card on %s. Skipping card.", url
+        )
+        return None
+    product_info["title"] = title_tag.text.strip()
+
+    # Extract Price
+    price_tag = card.find("span", class_="price")
+    if price_tag:
+        product_info["price"] = price_tag.text.strip()
+    else:
+        price_unavailable_tag = card.find("p", class_="price")
+        if price_unavailable_tag and "Price Unavailable" in price_unavailable_tag.text:
+            product_info["price"] = "Price Unavailable"
+        else:
+            logging.warning(
+                "Could not find price for product '%s' on %s.",
+                product_info["title"],
+                url,
+            )
+
+    # Extract Image URL
+    img_tag = card.find("img", class_="collection-image")
+    if img_tag and img_tag.has_attr("src"):
+        product_info["image_url"] = img_tag["src"]
+    else:
+        logging.warning(
+            "Could not find image URL for product '%s' on %s.",
+            product_info["title"],
+            url,
+        )
+
+    # Extract Details (Rating, Colors, Size, Gender)
+    details_container = card.find("div", class_="product-details")
+    if details_container:
+        detail_paragraphs = details_container.find_all("p")
+        for paragraph in detail_paragraphs:
+            text = paragraph.text.strip()
+            if "Rating:" in text:
+                product_info["rating"] = text.split("Rating:", 1)[-1].strip()
+            elif "Colors" in text:
+                product_info["colors"] = text  # Keep "N Colors" format
+            elif "Size:" in text:
+                product_info["size"] = text.split("Size:", 1)[-1].strip()
+            elif "Gender:" in text:
+                product_info["gender"] = text.split("Gender:", 1)[-1].strip()
+    else:
+        logging.warning(
+            "Could not find 'product-details' div for product '%s' on %s.",
+            product_info["title"],
+            url,
+        )
+
+    return product_info
 
 
 def extract_product_data(url: str) -> Optional[List[Dict[str, Optional[str]]]]:
     """
-    Extracts product data from a single page of the Fashion Studio website.
+    Extracts product data from a single page of the website.
 
     Args:
-        url (str): The URL of the product listing page.
+        url: The URL of the product listing page.
 
     Returns:
-        Optional[List[Dict[str, Optional[str]]]]: A list of dictionaries,
-        where each dictionary contains data for one product.
-        Returns None if extraction fails at the request level.
-        Returns an empty list if the page structure is unexpected.
+        A list of dictionaries, where each dictionary contains data for one product.
+        Returns None if the request fails (e.g., timeout, HTTP error).
+        Returns an empty list if the page structure is unexpected or no products are found.
     """
     products = []
     try:
-        # Tambahkan header User-Agent agar terlihat seperti browser biasa
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
-        }
-        response = requests.get(url, headers=headers, timeout=15)
-        response.raise_for_status()
-        logging.info(f"Successfully fetched HTML content from {url}")
+        headers = {"User-Agent": USER_AGENT}
+        response = requests.get(url, headers=headers, timeout=REQUEST_TIMEOUT)
+        response.raise_for_status()  # Raises HTTPError for bad responses (4XX, 5XX)
+        logging.info("Successfully fetched HTML content from %s", url)
     except requests.exceptions.Timeout:
-        logging.error(f"Timeout occurred while fetching URL {url}")
+        logging.error("Timeout occurred while fetching URL %s", url)
         return None
     except requests.exceptions.RequestException as e:
-        logging.error(f"Error fetching URL {url}: {e}")
+        logging.error("Error fetching URL %s: %s", url, e)
         return None
 
     try:
         soup = BeautifulSoup(response.text, "html.parser")
         collection_list = soup.find("div", id="collectionList")
 
-        # Jika tidak ada list produk di halaman ini (mungkin halaman terakhir atau error), kembalikan list kosong
         if not collection_list:
             logging.warning(
-                f"Could not find the collection list div with id='collectionList' on page {url}."
+                "Could not find collection list div with id='collectionList' on page %s.",
+                url,
             )
-            return []
+            return []  # Return empty list, not None, as the page was fetched
 
-        # Kembalikan list kosong jika tidak ada kartu produk
         product_cards = collection_list.find_all("div", class_="collection-card")
         if not product_cards:
             logging.warning(
-                f"Found collection list div, but no product cards inside on page {url}."
+                "Found collection list div, but no product cards inside on page %s.",
+                url,
             )
             return []
 
-        logging.info(f"Found {len(product_cards)} product cards on page {url}.")
+        logging.info("Found %d product cards on page %s.", len(product_cards), url)
 
         for card in product_cards:
-            product_info: Dict[str, Optional[str]] = {
-                "product_name": None,
-                "price": None,
-                "rating": None,
-                "colors": None,
-                "size": None,
-                "gender": None,
-                "image_url": None,
-            }
-
-            # Extract Product Name
-            title_tag = card.find("h3", class_="product-title")
-            if title_tag:
-                product_info["product_name"] = title_tag.text.strip()
-            else:
-                logging.warning(
-                    "Could not find product title for a card. Skipping card."
-                )
-                continue
-
-            # Extract Price
-            price_tag = card.find("span", class_="price")
-            if price_tag:
-                product_info["price"] = price_tag.text.strip()
-            else:
-                # Handle cases like "Price Unavailable" which is in a <p> tag
-                price_unavailable_tag = card.find("p", class_="price")
-                if (
-                    price_unavailable_tag
-                    and "Price Unavailable" in price_unavailable_tag.text
-                ):
-                    product_info["price"] = "Price Unavailable"
-                else:
-                    # Jika tidak ada span atau p, log sebagai warning
-                    logging.warning(
-                        f"Could not find price for product: {product_info['product_name']}"
-                    )
-                    product_info["price"] = None
-
-            # Extract Image URL
-            img_tag = card.find("img", class_="collection-image")
-            if img_tag and img_tag.has_attr("src"):
-                product_info["image_url"] = img_tag["src"]
-            else:
-                logging.warning(
-                    f"Could not find image URL for product: {product_info['product_name']}"
-                )
-
-            # --- PERBAIKAN EKSTRAKSI DETAIL (RATING, COLORS, SIZE, GENDER) ---
-            details_container = card.find("div", class_="product-details")
-            if details_container:
-                # Temukan SEMUA tag <p> yang relevan (berdasarkan style atau cukup semua <p> di dalam details)
-                # Menggunakan style lebih spesifik tapi bisa rapuh jika style berubah sedikit
-                # detail_paragraphs = details_container.find_all('p', style="font-size: 14px; color: #777")
-                # Alternatif: Ambil semua <p> di dalam product-details
-                detail_paragraphs = details_container.find_all("p")
-
-                for p in detail_paragraphs:
-                    text = p.text.strip()
-                    # Gunakan 'in' untuk pencarian yang lebih fleksibel
-                    if "Rating:" in text:
-                        # Ambil bagian setelah "Rating:", lalu strip spasi
-                        rating_value = text.split("Rating:", 1)[-1].strip()
-                        product_info["rating"] = rating_value
-                    elif "Colors" in text:  # Cek kata "Colors"
-                        # Ambil seluruh teksnya karena formatnya "N Colors"
-                        product_info["colors"] = text
-                    elif "Size:" in text:
-                        size_value = text.split("Size:", 1)[-1].strip()
-                        product_info["size"] = size_value
-                    elif "Gender:" in text:
-                        gender_value = text.split("Gender:", 1)[-1].strip()
-                        product_info["gender"] = gender_value
-                    # else: (Abaikan <p> lain seperti <p class="price"> jika menggunakan find_all('p'))
-                    #    logging.debug(f"Ignoring paragraph: {text}")
-
-            else:
-                logging.warning(
-                    f"Could not find 'product-details' div for product: {product_info['product_name']}"
-                )
-
-            # Hanya tambahkan jika produk punya nama (validasi dasar)
-            products.append(product_info)
-            # logging.debug(f"Extracted: {product_info}") # Debug untuk melihat hasil per produk
+            product_data = _parse_product_card(card, url)
+            if product_data:
+                products.append(product_data)
 
     except Exception as e:
+        # Catch potential parsing errors
         logging.error(
-            f"An error occurred during HTML parsing on page {url}: {e}", exc_info=True
-        )  # Tambahkan exc_info=True
-        # Kembalikan apa yang sudah terkumpul sejauh ini atau list kosong
-        return products if products else []
+            "An error occurred during HTML parsing on page %s: %s",
+            url,
+            e,
+            exc_info=True,
+        )
+        # Return data parsed so far, or empty list if parsing failed early
+        return products
 
     logging.info(
-        f"Successfully extracted data for {len(products)} products from page {url}."
+        "Successfully extracted data for %d products from page %s.", len(products), url
     )
     return products
 
 
-# --- Fungsi baru untuk mengelola pagination ---
-def scrape_all_pages(
-    base_url: str, max_pages: int = 50
-) -> List[Dict[str, Optional[str]]]:
+def scrape_all_pages(base_url: str, max_pages: int) -> List[Dict[str, Optional[str]]]:
     """
-    Scrapes product data from all pages up to max_pages.
+    Scrapes product data from multiple pages of the website.
 
     Args:
-        base_url (str): The base URL (without trailing slash usually).
-        max_pages (int): The maximum number of pages to scrape.
+        base_url: The base URL of the website (e.g., "https://fashion-studio.dicoding.dev").
+        max_pages: The maximum number of pages to attempt scraping.
 
     Returns:
-        List[Dict[str, Optional[str]]]: A list containing product data from all pages.
+        A list containing product data aggregated from all successfully scraped pages.
     """
-    all_products = []
-    if not base_url.endswith("/"):  # Pastikan base_url diakhiri slash
-        base_url += "/"
+    all_products: List[Dict[str, Optional[str]]] = []
+    normalized_base_url = base_url.rstrip("/")
 
     for page_num in range(1, max_pages + 1):
         if page_num == 1:
-            current_url = base_url
+            current_url = normalized_base_url + "/"
         else:
-            current_url = f"{base_url}page{page_num}"
+            current_url = f"{normalized_base_url}/page{page_num}"
 
-        logging.info(f"--- Scraping Page {page_num}: {current_url} ---")
+        logging.info("--- Scraping Page %d: %s ---", page_num, current_url)
         page_data = extract_product_data(current_url)
 
         if page_data is None:
             logging.error(
-                f"Failed to fetch or process page {page_num}. Stopping pagination."
+                "Failed to fetch or process page %d (%s). Skipping page.",
+                page_num,
+                current_url,
             )
-            # Anda bisa memilih untuk berhenti atau lanjut ke halaman berikutnya
-            # break # Berhenti jika satu halaman gagal total
-            continue  # Coba lanjut ke halaman berikutnya
+            # Continue to the next page attempt, maybe it's a temporary issue
+            time.sleep(REQUEST_DELAY)  # Still wait before next attempt
+            continue
 
         if not page_data:
             logging.warning(
-                f"No products found on page {page_num}. Possibly end of results or page structure issue."
+                "No products found on page %d (%s). "
+                "This might indicate the end of results or a page structure issue.",
+                page_num,
+                current_url,
             )
-            # Bisa jadi ini akhir dari produk, coba beberapa halaman lagi atau berhenti
-            # Misalnya, jika 3 halaman berturut-turut kosong, mungkin berhenti.
-            # Untuk sekarang, kita lanjutkan saja.
+            # Decide whether to stop early if no products found for consecutive pages?
+            # For now, continue up to max_pages as requested.
 
         all_products.extend(page_data)
-        logging.info(f"Accumulated {len(all_products)} products so far.")
+        logging.info(
+            "Accumulated %d products after scraping page %d.",
+            len(all_products),
+            page_num,
+        )
 
-        # Tambahkan jeda sedikit antar request agar tidak membebani server
-        time.sleep(0.5)  # Jeda 0.5 detik
+        # Add delay between requests to avoid overwhelming the server
+        if page_num < max_pages:
+            time.sleep(REQUEST_DELAY)
 
     logging.info(
-        f"Finished scraping all pages. Total products extracted: {len(all_products)}"
+        "Finished scraping up to %d pages. Total products extracted: %d",
+        max_pages,
+        len(all_products),
     )
     return all_products
 
 
 # Example usage (optional, for testing module directly)
-# if __name__ == '__main__':
-#     target_base_url = "https://fashion-studio.dicoding.dev"
-#     # Coba scrape beberapa halaman saja untuk testing
-#     # products_from_all_pages = scrape_all_pages(target_base_url, max_pages=3)
+if __name__ == "__main__":
+    # Define a test URL (replace if necessary)
+    TEST_BASE_URL = "https://fashion-studio.dicoding.dev"
+    MAX_TEST_PAGES = 2
 
-#     # Atau scrape satu halaman spesifik untuk debug ekstraksi detail
-#     test_url_page_1 = "https://fashion-studio.dicoding.dev/"
-#     print(f"\n--- Testing Extraction on Page 1: {test_url_page_1} ---")
-#     extracted_data_p1 = extract_product_data(test_url_page_1)
-#     if extracted_data_p1:
-#         print(f"Extracted {len(extracted_data_p1)} products from page 1.")
-#         # Tampilkan beberapa produk untuk diperiksa detailnya
-#         for i, prod in enumerate(extracted_data_p1[:5]): # Tampilkan 5 pertama
-#              print(f"Product {i+1}: {prod}")
-#     else:
-#         print("Extraction failed for page 1.")
+    print(f"\n--- Testing Extraction on Base URL: {TEST_BASE_URL} ---")
+    extracted_data_all = scrape_all_pages(TEST_BASE_URL, MAX_TEST_PAGES)
 
-#     test_url_page_2 = "https://fashion-studio.dicoding.dev/page2"
-#     print(f"\n--- Testing Extraction on Page 2: {test_url_page_2} ---")
-#     extracted_data_p2 = extract_product_data(test_url_page_2)
-#     if extracted_data_p2:
-#         print(f"Extracted {len(extracted_data_p2)} products from page 2.")
-#         for i, prod in enumerate(extracted_data_p2[:5]): # Tampilkan 5 pertama
-#              print(f"Product {i+1}: {prod}")
-#     else:
-#         print("Extraction failed for page 2.")
+    if extracted_data_all:
+        print(f"\nSuccessfully extracted {len(extracted_data_all)} products in total.")
+        print("Sample of extracted data (first 5 products):")
+        for i, prod in enumerate(extracted_data_all[:5]):
+            print(f"Product {i+1}: {prod}")
+    else:
+        print("\nExtraction process completed, but no products were extracted.")
+
+    print("\n--- Testing Single Page Extraction (Page 1) ---")
+    extracted_page1 = extract_product_data(TEST_BASE_URL + "/")
+    if extracted_page1 is not None:
+        print(f"Extracted {len(extracted_page1)} products from page 1.")
+    else:
+        print("Extraction failed for page 1.")
