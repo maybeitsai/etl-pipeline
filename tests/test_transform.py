@@ -1,107 +1,402 @@
 # tests/test_transform.py
+"""
+Unit tests for the utils.transform module.
+"""
 
+import logging
 import pytest
 import pandas as pd
-from pandas.testing import assert_frame_equal
-from datetime import datetime
-import numpy as np
+from datetime import timezone
+from unittest.mock import patch
+from freezegun import freeze_time
 
-# Pastikan path ke utils benar
-from utils.transform import transform_data
+# Assuming utils is importable from the project root
+from utils import transform
+from utils.constants import (
+    FINAL_SCHEMA_TYPE_MAPPING,
+    REQUIRED_COLUMNS,
+    USD_TO_IDR_RATE,
+)
 
-@pytest.fixture
-def sample_raw_data():
-    """Fixture untuk menyediakan data mentah sampel."""
-    return [
-        {'name': '  Kaos Polos Keren ', 'price_raw': 'Rp 75.000', 'category': 'T-Shirt', 'url': '/produk/kaos1'},
-        {'name': 'Jaket Bomber Stylish', 'price_raw': 'Rp 250.000', 'category': 'JACKET', 'url': '/produk/jaket1'},
-        {'name': 'Celana Chino Nyaman', 'price_raw': 'Rp 180000', 'category': 'Pants ', 'url': '/produk/celana1'}, # Harga tanpa format
-        {'name': 'Produk Error Harga', 'price_raw': 'Harga Tidak Valid', 'category': 'Unknown', 'url': '/produk/error'},
-        {'name': 'Produk Tanpa Harga', 'category': 'Outerwear', 'url': '/produk/outer1'}, # Key 'price_raw' hilang
-        {} # Data kosong
-    ]
-
-@pytest.fixture
-def expected_transformed_data():
-    """Fixture untuk menyediakan data hasil transformasi yang diharapkan."""
-    # Data ini HARUS sesuai dengan logika di transform_data
-    # Kolom 'scraped_at' akan dibandingkan secara terpisah karena nilainya dinamis
-    return pd.DataFrame({
-        'name': ['Kaos Polos Keren', 'Jaket Bomber Stylish', 'Celana Chino Nyaman', 'Produk Error Harga', 'Produk Tanpa Harga'],
-        'category': ['t-shirt', 'jacket', 'pants', 'unknown', 'outerwear'],
-        'price': [75000.0, 250000.0, 180000.0, 0.0, 0.0], # Asumsi error/missing price jadi 0
-        'url': ['/produk/kaos1', '/produk/jaket1', '/produk/celana1', '/produk/error', '/produk/outer1'],
-        # scraped_at ditambahkan di test
-    })
+# --- Tests for Cleaning Functions ---
 
 
-def test_transform_data_success(sample_raw_data, expected_transformed_data):
-    """Test transformasi data berhasil."""
-    # Hapus data kosong dari raw data karena transform akan skip
-    valid_raw_data = [d for d in sample_raw_data if d]
-    # Hapus data tanpa price_raw karena transform akan error jika tidak dihandle
-    # Asumsikan transform_data kita bisa handle KeyError price_raw dan tetap jalan
-    # Mari kita modifikasi transform_data sedikit untuk menangani KeyError price_raw
-    # Di transform_data, dalam blok try harga:
-    # try:
-    #    df['price'] = df['price_raw'].astype(str)...
-    # except KeyError:
-    #    logging.warning("Kolom 'price_raw' tidak ditemukan, mengisi harga dengan 0.")
-    #    df['price'] = 0 # Default value
+@pytest.mark.parametrize(
+    "price_str, expected",
+    [
+        ("$19.99", 19.99),
+        (" $ 1,234.56 ", 1234.56),
+        ("Price Unavailable", None),
+        ("price unavailable", None),
+        (None, None),
+        ("Invalid", None),
+        ("10.50", 10.50),
+        ("$", None), # Only symbol
+    ],
+)
+def test_clean_price(price_str, expected):
+    assert transform.clean_price(price_str) == expected
 
-    # Filter data raw yang punya 'price_raw' atau yang akan diisi 0
-    # Baris ke-5 ('Produk Tanpa Harga') akan punya price=0
-    # Baris ke-4 ('Produk Error Harga') akan punya price=0
-    # Baris terakhir ({}) akan difilter
 
-    transformed_df = transform_data(valid_raw_data)
+@pytest.mark.parametrize(
+    "rating_str, expected",
+    [
+        ("⭐ 4.5 / 5", 4.5),
+        ("Rating: 3.8 stars", 3.8),
+        (" 4 ", 4.0),
+        ("4.2", 4.2),
+        ("Not Rated", None),
+        ("invalid rating", None),
+        (None, None),
+        ("No rating", None),
+        ("5/5", 5.0), # Simple fraction format
+    ],
+)
+def test_clean_rating(rating_str, expected):
+    assert transform.clean_rating(rating_str) == expected
 
-    assert not transformed_df.empty
-    # Kolom 'scraped_at' ada dan tipenya datetime
-    assert 'scraped_at' in transformed_df.columns
-    assert pd.api.types.is_datetime64_any_dtype(transformed_df['scraped_at'])
 
-    # Bandingkan kolom lain (tanpa scraped_at)
-    cols_to_compare = expected_transformed_data.columns.tolist()
-    # Gunakan check_dtype=False karena price bisa jadi int vs float (75000.0 vs 75000)
-    # Gunakan check_like=True untuk mengabaikan urutan baris jika diperlukan
-    assert_frame_equal(
-        transformed_df[cols_to_compare].sort_values(by='name').reset_index(drop=True),
-        expected_transformed_data.sort_values(by='name').reset_index(drop=True),
-        check_dtype=False,
-        # atol=0.1 # Toleransi untuk float jika perlu
+@pytest.mark.parametrize(
+    "colors_str, expected",
+    [
+        ("Available in 3 Colors", 3),
+        (" 5 colors ", 5),
+        ("1 Color", 1),
+        ("Single color", None), # No number
+        ("Color: Blue", None), # No number
+        (None, None),
+        ("Invalid", None),
+    ],
+)
+def test_clean_colors(colors_str, expected):
+    assert transform.clean_colors(colors_str) == expected
+
+
+# --- Tests for transform_data ---
+
+# Sample data covering various scenarios
+SAMPLE_RAW_DATA = [
+    # Valid full record
+    {
+        "title": " T-shirt 1 ",
+        "price": "$10.00",
+        "rating": "⭐ 4.5 / 5",
+        "colors": "3 colors",
+        "size": " M ",
+        "gender": " Men",
+        "image_url": "url1",
+    },
+    # Valid record, different values
+    {
+        "title": "Pants 2",
+        "price": "$25.50",
+        "rating": "⭐ 3.8 / 5",
+        "colors": "5 colors",
+        "size": "L",
+        "gender": "Women",
+        "image_url": "url2",
+    },
+    # Duplicate of first record (should be removed)
+    {
+        "title": " T-shirt 1 ",
+        "price": "$10.00",
+        "rating": "⭐ 4.5 / 5",
+        "colors": "3 colors",
+        "size": " M ",
+        "gender": " Men",
+        "image_url": "url1",
+    },
+    # Price unavailable (should become None, potentially dropped if required)
+    {
+        "title": "Jacket 3",
+        "price": "Price Unavailable",
+        "rating": "⭐ 4.0 / 5",
+        "colors": "2 colors",
+        "size": "S",
+        "gender": "Unisex",
+        "image_url": "url3",
+    },
+    # Unknown Product (should be filtered out)
+    {
+        "title": "Unknown Product",
+        "price": "$50.00",
+        "rating": "⭐ 5.0 / 5",
+        "colors": "1 Color",
+        "size": "XL",
+        "gender": "Men",
+        "image_url": "url4",
+    },
+    # Rating not rated (should become None, potentially dropped if required)
+    {
+        "title": "Shoes 5",
+        "price": "$120.00",
+        "rating": "Not Rated",
+        "colors": "4 colors",
+        "size": "M",
+        "gender": "Women",
+        "image_url": "url5",
+    },
+    # Colors None (should become None, potentially dropped if required)
+    {
+        "title": "Hat 6",
+        "price": "$15.00",
+        "rating": "⭐ 4.2 / 5",
+        "colors": None,
+        "size": "OS",
+        "gender": "Unisex",
+        "image_url": "url6",
+    },
+    # Size None (should become None, potentially dropped if required)
+    {
+        "title": "Belt 7",
+        "price": "$30.00",
+        "rating": "⭐ 4.9 / 5",
+        "colors": "1 color",
+        "size": None,
+        "gender": "Unisex",
+        "image_url": "url7",
+    },
+    # Image URL None (should become None, potentially dropped if required)
+    {
+        "title": "Item 9 No Img",
+        "price": "$40.00",
+        "rating": "⭐ 4.0 / 5",
+        "colors": "1 color",
+        "size": "M",
+        "gender": "Women",
+        "image_url": None,
+    },
+    # Complete Item to check final schema
+    {
+        "title": "Complete Item 8",
+        "price": "$75.00",
+        "rating": "⭐ 4.1 / 5",
+        "colors": "2 colors",
+        "size": "L",
+        "gender": "Men",
+        "image_url": "url8",
+    },
+]
+
+# Define expected output based on SAMPLE_RAW_DATA and transformation logic
+# Assuming REQUIRED_COLUMNS = ['title', 'price', 'image_url'] for this example
+# Rows with None in these columns after cleaning will be dropped.
+# Also, 'Unknown Product' is filtered, and duplicates are removed.
+
+# Expected intermediate values after cleaning/parsing:
+# T-shirt 1: price=10.0, rating=4.5, colors=3
+# Pants 2: price=25.5, rating=3.8, colors=5
+# Jacket 3: price=None, rating=4.0, colors=2 -> DROPPED (if price required)
+# Shoes 5: price=120.0, rating=None, colors=4 -> DROPPED (if rating required)
+# Hat 6: price=15.0, rating=4.2, colors=None -> DROPPED (if colors required)
+# Belt 7: price=30.0, rating=4.9, colors=1, size=None -> DROPPED (if size required)
+# Item 9 No Img: price=40.0, rating=4.0, colors=1, image_url=None -> DROPPED (if image_url required)
+# Complete Item 8: price=75.0, rating=4.1, colors=2
+
+# Let's assume REQUIRED_COLUMNS = ['title', 'price', 'image_url', 'size', 'gender']
+# Based on this, expected rows to survive:
+# T-shirt 1, Pants 2, Complete Item 8
+
+EXPECTED_TITLES = ["T-shirt 1", "Pants 2", "Complete Item 8"]
+EXPECTED_PRICES_IDR = [
+    10.00 * USD_TO_IDR_RATE,
+    25.50 * USD_TO_IDR_RATE,
+    75.00 * USD_TO_IDR_RATE,
+]
+EXPECTED_RATINGS = [4.5, 3.8, 4.1]
+EXPECTED_COLORS = [3, 5, 2]
+EXPECTED_SIZES = ["M", "L", "L"]
+EXPECTED_GENDERS = ["Men", "Women", "Men"]
+EXPECTED_IMAGE_URLS = ["url1", "url2", "url8"]
+EXPECTED_ROW_COUNT = 3
+EXPECTED_COLS = [
+    "title",
+    "price",
+    "rating",
+    "colors",
+    "size",
+    "gender",
+    "image_url",
+    "timestamp",
+]
+
+
+@freeze_time("2024-01-15 12:00:00 UTC") # Freeze time for consistent timestamp
+def test_transform_data_happy_path_and_cleaning(caplog):
+    """Tests the main transform_data function with various cleaning, filtering, and duplication."""
+    # Arrange
+    caplog.set_level(logging.INFO)
+    # Use a copy to avoid modifying the original list during tests
+    test_data = [d.copy() for d in SAMPLE_RAW_DATA]
+
+    # Act
+    df_transformed = transform.transform_data(test_data)
+
+    # Assert
+    assert not df_transformed.empty
+    assert len(df_transformed) == EXPECTED_ROW_COUNT
+    assert list(df_transformed.columns) == EXPECTED_COLS
+
+    # Check logs for filtering/dropping
+    assert "Filtered 1 rows with 'Unknown Product' title." in caplog.text
+    # Calculate expected dropped rows (total - unknown - duplicates - final)
+    # Initial = 10, Unknown = 1, Duplicate = 1 -> 8 remain before dropna
+    # Final = 3, so 8 - 3 = 5 dropped by dropna
+    # The exact number depends heavily on REQUIRED_COLUMNS
+    # Let's check if the dropna log message exists if rows were dropped
+    initial_rows = len(SAMPLE_RAW_DATA)
+    if initial_rows - 1 - 1 > EXPECTED_ROW_COUNT: # If (initial - unknown - duplicate) > final
+         assert "Removed" in caplog.text and "rows with null values in required columns" in caplog.text
+    assert "Removed 1 duplicate rows." in caplog.text
+    assert f"Transformation complete. Final rows: {EXPECTED_ROW_COUNT}" in caplog.text
+
+    # Check data content (sort by title for consistent comparison)
+    df_transformed = df_transformed.sort_values(by="title").reset_index(drop=True)
+
+    pd.testing.assert_series_equal(
+        df_transformed["title"], pd.Series(sorted(EXPECTED_TITLES)), check_names=False
+    )
+    # Need to sort expected values based on sorted titles
+    sort_indices = [EXPECTED_TITLES.index(t) for t in sorted(EXPECTED_TITLES)]
+    pd.testing.assert_series_equal(
+        df_transformed["price"], pd.Series([EXPECTED_PRICES_IDR[i] for i in sort_indices]), check_dtype=False, check_names=False
+    )
+    pd.testing.assert_series_equal(
+        df_transformed["rating"], pd.Series([EXPECTED_RATINGS[i] for i in sort_indices]), check_dtype=False, check_names=False
+    )
+    pd.testing.assert_series_equal(
+        df_transformed["colors"], pd.Series([EXPECTED_COLORS[i] for i in sort_indices]), check_dtype=False, check_names=False
+    )
+    pd.testing.assert_series_equal(
+        df_transformed["size"], pd.Series([EXPECTED_SIZES[i] for i in sort_indices]), check_names=False
+    )
+    pd.testing.assert_series_equal(
+        df_transformed["gender"], pd.Series([EXPECTED_GENDERS[i] for i in sort_indices]), check_names=False
+    )
+    pd.testing.assert_series_equal(
+        df_transformed["image_url"], pd.Series([EXPECTED_IMAGE_URLS[i] for i in sort_indices]), check_names=False
     )
 
-def test_transform_data_empty_input():
-    """Test transformasi dengan input list kosong."""
-    transformed_df = transform_data([])
-    assert transformed_df.empty
-    assert isinstance(transformed_df, pd.DataFrame)
+    # Check timestamp (should be consistent due to freeze_time)
+    expected_timestamp = pd.Timestamp("2024-01-15 12:00:00+0000", tz="UTC").tz_convert("Asia/Jakarta")
+    assert all(df_transformed["timestamp"] == expected_timestamp)
 
-def test_transform_data_missing_columns(caplog):
-    """Test jika kolom penting selain price_raw hilang (misal 'name')."""
-    raw_data = [
-        {'price_raw': 'Rp 50.000', 'category': 'Test', 'url': '/test'}
-        # Tidak ada 'name'
+    # Check final dtypes
+    for col, dtype in FINAL_SCHEMA_TYPE_MAPPING.items():
+        assert df_transformed[col].dtype == dtype
+    assert pd.api.types.is_datetime64_any_dtype(df_transformed["timestamp"])
+    assert df_transformed["timestamp"].dt.tz == timezone(pd.Timedelta(hours=7)) # Asia/Jakarta is UTC+7
+
+
+def test_transform_data_empty_input(caplog):
+    """Tests transform_data with an empty input list."""
+    # Arrange
+    caplog.set_level(logging.WARNING)
+
+    # Act
+    df_transformed = transform.transform_data([])
+
+    # Assert
+    assert df_transformed.empty
+    assert "Received empty list for transformation." in caplog.text
+
+
+def test_transform_data_all_invalid_input(caplog):
+    """Tests transform_data where all input rows are filtered out or invalid."""
+    # Arrange
+    test_data = [
+        {"title": "Unknown Product", "price": "$10", "rating": "4", "colors": "1", "size": "S", "gender": "M", "image_url": "url"},
+        {"title": "Valid Title But Missing Required", "price": None, "rating": "4", "colors": "1", "size": "S", "gender": "M", "image_url": "url"}, # Assume price is required
     ]
-    with caplog.at_level(logging.WARNING):
-         transformed_df = transform_data(raw_data)
+    # Modify REQUIRED_COLUMNS temporarily for this test if needed, or ensure price is required
+    original_required = transform.REQUIRED_COLUMNS
+    transform.REQUIRED_COLUMNS = ['title', 'price'] # Ensure price causes dropna
+    caplog.set_level(logging.INFO)
 
-    # Seharusnya tetap memproses kolom lain dan kolom 'name' tidak ada
-    assert 'name' not in transformed_df.columns
-    assert 'Kolom \'name\' tidak ditemukan.' in caplog.text
-    assert not transformed_df.empty # Tetap menghasilkan data
-    assert transformed_df.iloc[0]['price'] == 50000.0
+    # Act
+    df_transformed = transform.transform_data(test_data)
 
-def test_transform_price_cleaning():
-    """Fokus pada berbagai format harga."""
-    raw = [
-        {'name':'p1', 'price_raw':'Rp 1.234.567', 'cat':'c1', 'url':'u1'},
-        {'name':'p2', 'price_raw':'Rp100000', 'cat':'c1', 'url':'u2'},
-        {'name':'p3', 'price_raw':'  50.000  ', 'cat':'c1', 'url':'u3'},
-        # Tambahkan format lain jika ada (misal, pakai koma desimal)
-        # {'name':'p4', 'price_raw':'Rp 12,500.99', 'cat':'c1', 'url':'u4'} # Perlu regex berbeda
+    # Assert
+    assert df_transformed.empty
+    assert "Filtered 1 rows with 'Unknown Product' title." in caplog.text
+    assert "Removed 1 rows with null values in required columns" in caplog.text # The second row
+    assert "Transformation complete. Final rows: 0" in caplog.text
+
+    # Restore original REQUIRED_COLUMNS
+    transform.REQUIRED_COLUMNS = original_required
+
+
+@patch("utils.transform._prepare_final_schema")
+def test_transform_data_final_schema_failure(mock_prepare_final, caplog):
+    """Tests transform_data when _prepare_final_schema fails (returns empty)."""
+    # Arrange
+    mock_prepare_final.return_value = pd.DataFrame() # Simulate failure
+    test_data = [SAMPLE_RAW_DATA[0].copy()] # Use one valid record
+    caplog.set_level(logging.ERROR)
+
+    # Act
+    df_transformed = transform.transform_data(test_data)
+
+    # Assert
+    assert df_transformed.empty
+    assert "Failed during final schema preparation." in caplog.text
+    mock_prepare_final.assert_called_once()
+
+
+@patch("pandas.Timestamp", side_effect=Exception("Timezone DB not found"))
+def test_transform_data_timestamp_timezone_error(mock_timestamp, caplog):
+    """Tests fallback to UTC if timezone conversion fails."""
+    # Arrange
+    test_data = [SAMPLE_RAW_DATA[0].copy()] # Use one valid record
+    caplog.set_level(logging.WARNING)
+
+    # Act
+    df_transformed = transform.transform_data(test_data)
+
+    # Assert
+    assert not df_transformed.empty
+    assert "Failed to convert timezone to Asia/Jakarta" in caplog.text
+    assert "Using UTC." in caplog.text
+    assert pd.api.types.is_datetime64_any_dtype(df_transformed["timestamp"])
+    assert df_transformed["timestamp"].dt.tz == timezone.utc
+
+
+def test_transform_data_key_error(caplog):
+    """Tests transform_data when input dict is missing an expected key."""
+    # Arrange
+    # Missing 'price' which is used early in _initial_clean_and_parse
+    test_data = [
+        {
+            "title": " T-shirt 1 ",
+            # "price": "$10.00", # Missing
+            "rating": "⭐ 4.5 / 5",
+            "colors": "3 colors",
+            "size": " M ",
+            "gender": " Men",
+            "image_url": "url1",
+        }
     ]
-    df = transform_data(raw)
-    expected_prices = [1234567.0, 100000.0, 50000.0]
-    assert df['price'].tolist() == expected_prices
+    caplog.set_level(logging.ERROR)
+
+    # Act
+    df_transformed = transform.transform_data(test_data)
+
+    # Assert
+    assert df_transformed.empty
+    assert "Missing expected key during transformation: 'price'" in caplog.text
+
+
+@patch("utils.transform._apply_business_logic", side_effect=Exception("Unexpected calculation error"))
+def test_transform_data_unexpected_exception(mock_apply_logic, caplog):
+    """Tests graceful handling of unexpected exceptions during transformation steps."""
+    # Arrange
+    test_data = [SAMPLE_RAW_DATA[0].copy()] # Use one valid record
+    caplog.set_level(logging.ERROR)
+
+    # Act
+    df_transformed = transform.transform_data(test_data)
+
+    # Assert
+    assert df_transformed.empty
+    assert "An unexpected error occurred during data transformation" in caplog.text
+    assert "Unexpected calculation error" in caplog.text

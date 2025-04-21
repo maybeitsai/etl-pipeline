@@ -1,136 +1,478 @@
 # tests/test_extract.py
+"""
+Unit tests for the utils.extract module.
+"""
+
+import logging
+import time
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 import requests
-import requests_mock
 from bs4 import BeautifulSoup
-import logging
+from requests.exceptions import HTTPError, RequestException, Timeout
 
-# Pastikan path ke utils benar, sesuaikan jika perlu
-from utils.extract import extract_products
+# Assuming utils is importable from the project root
+from utils import extract
+from utils.constants import REQUEST_DELAY, USER_AGENT
 
-# Contoh HTML (sesuaikan dengan struktur HTML target SEBENARNYA setelah inspeksi)
-# Ini adalah contoh SANGAT sederhana, Anda HARUS menyesuaikannya
-MOCK_HTML_SUCCESS = """
+# Sample HTML structures for testing parsing logic
+SAMPLE_CARD_HTML_FULL = """
+<div class="collection-card">
+    <img class="collection-image" src="image.jpg">
+    <h3 class="product-title">  Awesome T-Shirt  </h3>
+    <span class="price"> $19.99 </span>
+    <div class="product-details">
+        <p>Rating: ⭐ 4.5 / 5</p>
+        <p>Available in 3 Colors</p>
+        <p>Size: M </p>
+        <p>Gender: Unisex</p>
+    </div>
+</div>
+"""
+
+SAMPLE_CARD_HTML_NO_PRICE = """
+<div class="collection-card">
+    <img class="collection-image" src="image2.jpg">
+    <h3 class="product-title">Cool Hat</h3>
+    <!-- No price span -->
+    <div class="product-details">
+        <p>Rating: ⭐ 4.0 / 5</p>
+        <p>Gender: Men</p>
+    </div>
+</div>
+"""
+
+SAMPLE_CARD_HTML_PRICE_UNAVAILABLE = """
+<div class="collection-card">
+    <img class="collection-image" src="image3.jpg">
+    <h3 class="product-title">Fancy Pants</h3>
+    <p class="price">Price Unavailable</p>
+    <div class="product-details">
+        <p>Rating: ⭐ 3.5 / 5</p>
+        <p>2 Colors</p>
+        <p>Size: L</p>
+    </div>
+</div>
+"""
+
+SAMPLE_CARD_HTML_NO_IMAGE = """
+<div class="collection-card">
+    <!-- No img tag -->
+    <h3 class="product-title">Invisible Cloak</h3>
+    <span class="price">$99.99</span>
+    <div class="product-details">
+        <p>Rating: ⭐ 5.0 / 5</p>
+    </div>
+</div>
+"""
+
+SAMPLE_CARD_HTML_NO_DETAILS = """
+<div class="collection-card">
+    <img class="collection-image" src="image4.jpg">
+    <h3 class="product-title">Basic Item</h3>
+    <span class="price">$5.00</span>
+    <!-- No product-details div -->
+</div>
+"""
+
+SAMPLE_CARD_HTML_NO_TITLE = """
+<div class="collection-card">
+    <img class="collection-image" src="image5.jpg">
+    <!-- No h3 product-title -->
+    <span class="price">$15.00</span>
+    <div class="product-details">
+        <p>Rating: ⭐ 4.8 / 5</p>
+    </div>
+</div>
+"""
+
+SAMPLE_PAGE_HTML_MULTIPLE_CARDS = f"""
 <html><body>
-  <div class="product-card">
-    <a href="/product/t-shirt-keren">
-      <h3 class="product-name"> Kaos Polos Keren  </h3>
-    </a>
-    <span class="product-price"> Rp 75.000 </span>
-    <!-- Anggap kategori ada di elemen lain atau URL -->
-  </div>
-  <div class="product-card">
-    <a href="/product/jaket-bomber">
-      <h3 class="product-name">Jaket Bomber Stylish </h3>
-    </a>
-    <span class="product-price"> Rp 250.000 </span>
-  </div>
-  <div class="product-card">
-    <!-- Produk tanpa harga -->
-    <a href="/product/celana-error">
-      <h3 class="product-name">Celana Error</h3>
-    </a>
-  </div>
+<div id="collectionList">
+    {SAMPLE_CARD_HTML_FULL}
+    {SAMPLE_CARD_HTML_NO_PRICE}
+    {SAMPLE_CARD_HTML_PRICE_UNAVAILABLE}
+</div>
 </body></html>
 """
 
-MOCK_HTML_NO_PRODUCTS = """
+SAMPLE_PAGE_HTML_NO_LIST = """
 <html><body>
-  <h1>Tidak ada produk ditemukan</h1>
+<div>Some other content</div>
 </body></html>
 """
 
-TARGET_URL = "https://fashion-studio.dicoding.dev" # Atau URL yang sama di extract.py
-
-def test_extract_products_success(requests_mock):
-    """Test ekstraksi berhasil dengan data yang valid."""
-    requests_mock.get(TARGET_URL, text=MOCK_HTML_SUCCESS, status_code=200)
-
-    extracted_data = extract_products(TARGET_URL)
-
-    assert len(extracted_data) == 3 # 3 kartu produk di HTML mock
-
-    # Periksa data produk pertama (sesuaikan dengan ekstraksi Anda)
-    assert extracted_data[0]['name'] == 'Kaos Polos Keren'
-    assert extracted_data[0]['price_raw'] == 'Rp 75.000'
-    # Asumsikan URL relatif dan kategori default (sesuaikan jika logika berbeda)
-    assert extracted_data[0]['url'] == '/product/t-shirt-keren'
-    assert extracted_data[0]['category'] == 'Unknown' # Sesuai implementasi extract.py
-
-    # Periksa produk kedua
-    assert extracted_data[1]['name'] == 'Jaket Bomber Stylish'
-    assert extracted_data[1]['price_raw'] == 'Rp 250.000'
-
-    # Periksa produk ketiga (yang tidak punya harga)
-    assert extracted_data[2]['name'] == 'Celana Error'
-    # Pastikan handling error di extract.py (misal, price jadi None atau string kosong)
-    # Jika extract.py men-skip produk error, assert len(extracted_data) == 2
-    # Dalam contoh extract.py kita, dia akan mencoba find price dan gagal, jadi data lain tetap ada
-    # Tapi price_raw mungkin tidak ada jika find gagal. Mari kita asumsikan ia skip.
-    # Modifikasi extract.py agar lebih robust jika find gagal.
-    # Untuk contoh ini, anggap dia skip jika find('span', class_='product-price') gagal
-    # ---> PERLU MODIFIKASI extract.py agar test ini pass <---
-    # Misal, di extract.py, dalam loop for card:, tambahkan:
-    # price_element = card.find('span', class_='product-price')
-    # if not price_element:
-    #     logging.warning(f"Harga tidak ditemukan untuk produk: {name}. Skipping.")
-    #     continue # Skip produk ini
-    # price_text = price_element.text.strip()
-    # --> Jika modifikasi di atas dilakukan, maka assert len(extracted_data) harus jadi 2 <--
+SAMPLE_PAGE_HTML_EMPTY_LIST = """
+<html><body>
+<div id="collectionList">
+    <!-- No collection-card divs -->
+</div>
+</body></html>
+"""
 
 
-def test_extract_products_no_products_found(requests_mock, caplog):
-    """Test ketika tidak ada elemen produk yang cocok dengan selektor."""
-    requests_mock.get(TARGET_URL, text=MOCK_HTML_NO_PRODUCTS, status_code=200)
+# --- Tests for _parse_product_card ---
 
-    with caplog.at_level(logging.WARNING):
-        extracted_data = extract_products(TARGET_URL)
 
-    assert len(extracted_data) == 0
-    assert "Tidak ada kartu produk yang ditemukan" in caplog.text
+@pytest.mark.parametrize(
+    "html, expected_dict, log_warnings",
+    [
+        (
+            SAMPLE_CARD_HTML_FULL,
+            {
+                "title": "Awesome T-Shirt",
+                "price": "$19.99",
+                "rating": "⭐ 4.5 / 5",
+                "colors": "Available in 3 Colors",
+                "size": "M",
+                "gender": "Unisex",
+                "image_url": "image.jpg",
+            },
+            [],
+        ),
+        (
+            SAMPLE_CARD_HTML_NO_PRICE,
+            {
+                "title": "Cool Hat",
+                "price": None,
+                "rating": "⭐ 4.0 / 5",
+                "colors": None,
+                "size": None,
+                "gender": "Men",
+                "image_url": "image2.jpg",
+            },
+            ["Could not find price for product 'Cool Hat'"],
+        ),
+        (
+            SAMPLE_CARD_HTML_PRICE_UNAVAILABLE,
+            {
+                "title": "Fancy Pants",
+                "price": "Price Unavailable",
+                "rating": "⭐ 3.5 / 5",
+                "colors": "2 Colors",
+                "size": "L",
+                "gender": None,
+                "image_url": "image3.jpg",
+            },
+            [],
+        ),
+        (
+            SAMPLE_CARD_HTML_NO_IMAGE,
+            {
+                "title": "Invisible Cloak",
+                "price": "$99.99",
+                "rating": "⭐ 5.0 / 5",
+                "colors": None,
+                "size": None,
+                "gender": None,
+                "image_url": None,
+            },
+            ["Could not find image URL for product 'Invisible Cloak'"],
+        ),
+        (
+            SAMPLE_CARD_HTML_NO_DETAILS,
+            {
+                "title": "Basic Item",
+                "price": "$5.00",
+                "rating": None,
+                "colors": None,
+                "size": None,
+                "gender": None,
+                "image_url": "image4.jpg",
+            },
+            ["Could not find 'product-details' div for product 'Basic Item'"],
+        ),
+        (
+            SAMPLE_CARD_HTML_NO_TITLE,
+            None,  # Expect None when title is missing
+            ["Could not find valid product title"],
+        ),
+    ],
+)
+def test_parse_product_card(html, expected_dict, log_warnings, caplog):
+    """Tests _parse_product_card with various HTML structures."""
+    # Arrange
+    soup = BeautifulSoup(html, "html.parser")
+    card = soup.find("div", class_="collection-card")
+    test_url = "http://test.com/page1"
+    caplog.set_level(logging.WARNING)
 
-def test_extract_products_request_error(requests_mock, caplog):
-    """Test penanganan error saat request (misal, 404 Not Found)."""
-    requests_mock.get(TARGET_URL, status_code=404, reason="Not Found")
+    # Act
+    result = extract._parse_product_card(card, test_url)
 
-    with caplog.at_level(logging.ERROR):
-        extracted_data = extract_products(TARGET_URL)
+    # Assert
+    assert result == expected_dict
+    for warning_msg in log_warnings:
+        assert warning_msg in caplog.text
 
-    assert len(extracted_data) == 0
-    assert f"Error saat request ke {TARGET_URL}" in caplog.text
-    assert "404 Client Error: Not Found" in caplog.text # Dari response.raise_for_status()
 
-def test_extract_products_timeout(requests_mock, caplog):
-    """Test penanganan error timeout."""
-    requests_mock.get(TARGET_URL, exc=requests.exceptions.Timeout)
+# --- Tests for extract_product_data ---
 
-    with caplog.at_level(logging.ERROR):
-        extracted_data = extract_products(TARGET_URL)
 
-    assert len(extracted_data) == 0
-    assert f"Request timeout saat mencoba mengakses {TARGET_URL}" in caplog.text
+@patch("utils.extract.requests.get")
+def test_extract_product_data_success(mock_get, caplog):
+    """Tests successful extraction from a page with multiple products."""
+    # Arrange
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_response.text = SAMPLE_PAGE_HTML_MULTIPLE_CARDS
+    mock_response.raise_for_status.return_value = None
+    mock_get.return_value = mock_response
+    test_url = "http://test.com/page1"
+    caplog.set_level(logging.INFO)
 
-def test_extract_products_attribute_error(requests_mock, caplog):
-    """Test jika struktur HTML berubah dan menyebabkan AttributeError."""
-    # HTML dengan struktur berbeda (misal, tidak ada 'h3' untuk nama)
-    MOCK_HTML_BAD_STRUCTURE = """
-    <html><body>
-      <div class="product-card">
-        <a href="/product/t-shirt-keren">
-          <div class="product-title"> Kaos Polos Keren  </div> <!-- Bukan h3 -->
-        </a>
-        <span class="product-price"> Rp 75.000 </span>
-      </div>
-    </body></html>
-    """
-    requests_mock.get(TARGET_URL, text=MOCK_HTML_BAD_STRUCTURE, status_code=200)
+    # Act
+    result = extract.extract_product_data(test_url)
 
-    with caplog.at_level(logging.WARNING):
-        extracted_data = extract_products(TARGET_URL)
+    # Assert
+    mock_get.assert_called_once_with(
+        test_url, headers={"User-Agent": USER_AGENT}, timeout=extract.REQUEST_TIMEOUT
+    )
+    mock_response.raise_for_status.assert_called_once()
+    assert len(result) == 3
+    assert result[0]["title"] == "Awesome T-Shirt"
+    assert result[1]["title"] == "Cool Hat"
+    assert result[2]["title"] == "Fancy Pants"
+    assert f"Successfully fetched HTML content from {test_url}" in caplog.text
+    assert f"Found 3 product cards on page {test_url}" in caplog.text
+    assert f"Successfully extracted data for 3 products from page {test_url}" in caplog.text
 
-    # Harusnya skip produk yang error dan lanjut (atau return kosong jika hanya 1)
-    # Jika extract.py kita menggunakan try-except di dalam loop:
-    assert len(extracted_data) == 0
-    assert "Gagal mengekstrak data dari satu kartu produk" in caplog.text
-    assert "AttributeError" in caplog.text # Atau error spesifik lainnya
+
+@patch("utils.extract.requests.get")
+def test_extract_product_data_request_timeout(mock_get, caplog):
+    """Tests handling of requests.Timeout."""
+    # Arrange
+    test_url = "http://timeout.com"
+    mock_get.side_effect = Timeout("Request timed out")
+    caplog.set_level(logging.ERROR)
+
+    # Act
+    result = extract.extract_product_data(test_url)
+
+    # Assert
+    assert result is None
+    assert f"Timeout occurred while fetching URL {test_url}" in caplog.text
+    mock_get.assert_called_once_with(
+        test_url, headers={"User-Agent": USER_AGENT}, timeout=extract.REQUEST_TIMEOUT
+    )
+
+
+@patch("utils.extract.requests.get")
+def test_extract_product_data_http_error(mock_get, caplog):
+    """Tests handling of HTTPError (e.g., 404 Not Found)."""
+    # Arrange
+    mock_response = MagicMock()
+    mock_response.status_code = 404
+    mock_response.raise_for_status.side_effect = HTTPError("404 Client Error")
+    mock_get.return_value = mock_response
+    test_url = "http://notfound.com"
+    caplog.set_level(logging.ERROR)
+
+    # Act
+    result = extract.extract_product_data(test_url)
+
+    # Assert
+    assert result is None
+    assert f"Request failed for URL {test_url}: 404 Client Error" in caplog.text
+    mock_response.raise_for_status.assert_called_once()
+
+
+@patch("utils.extract.requests.get")
+def test_extract_product_data_other_request_exception(mock_get, caplog):
+    """Tests handling of other RequestException errors."""
+    # Arrange
+    test_url = "http://connectionerror.com"
+    mock_get.side_effect = RequestException("Connection error")
+    caplog.set_level(logging.ERROR)
+
+    # Act
+    result = extract.extract_product_data(test_url)
+
+    # Assert
+    assert result is None
+    assert f"Request failed for URL {test_url}: Connection error" in caplog.text
+
+
+@patch("utils.extract.requests.get")
+def test_extract_product_data_no_collection_list(mock_get, caplog):
+    """Tests handling when the main collection list div is missing."""
+    # Arrange
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_response.text = SAMPLE_PAGE_HTML_NO_LIST
+    mock_response.raise_for_status.return_value = None
+    mock_get.return_value = mock_response
+    test_url = "http://test.com/no-list"
+    caplog.set_level(logging.WARNING)
+
+    # Act
+    result = extract.extract_product_data(test_url)
+
+    # Assert
+    assert result == []
+    assert (
+        f"Could not find collection list div with id='collectionList' on {test_url}."
+        in caplog.text
+    )
+
+
+@patch("utils.extract.requests.get")
+def test_extract_product_data_empty_collection_list(mock_get, caplog):
+    """Tests handling when the collection list is present but empty."""
+    # Arrange
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_response.text = SAMPLE_PAGE_HTML_EMPTY_LIST
+    mock_response.raise_for_status.return_value = None
+    mock_get.return_value = mock_response
+    test_url = "http://test.com/empty-list"
+    caplog.set_level(logging.WARNING)
+
+    # Act
+    result = extract.extract_product_data(test_url)
+
+    # Assert
+    assert result == []
+    assert (
+        f"Found collection list, but no product cards inside on page {test_url}."
+        in caplog.text
+    )
+
+
+@patch("utils.extract.requests.get")
+@patch("utils.extract.BeautifulSoup")
+def test_extract_product_data_parsing_error(mock_bs, mock_get, caplog):
+    """Tests handling of unexpected errors during BeautifulSoup parsing."""
+    # Arrange
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_response.text = "<html"  # Incomplete HTML to potentially cause issues
+    mock_response.raise_for_status.return_value = None
+    mock_get.return_value = mock_response
+    mock_bs.side_effect = Exception("Parsing failed badly")
+    test_url = "http://test.com/parse-error"
+    caplog.set_level(logging.ERROR)
+
+    # Act
+    result = extract.extract_product_data(test_url)
+
+    # Assert
+    # Depending on where the exception occurs, result might be []
+    # If it happens *before* products list is initialized, it might be None?
+    # The code catches Exception broadly, returning products (which is [] here).
+    assert result == []
+    assert f"An error occurred during HTML parsing on page {test_url}" in caplog.text
+    assert "Parsing failed badly" in caplog.text
+
+
+# --- Tests for scrape_all_pages ---
+
+
+@patch("utils.extract.extract_product_data")
+@patch("utils.extract.time.sleep")
+def test_scrape_all_pages_success(mock_sleep, mock_extract, caplog):
+    """Tests scraping multiple pages successfully."""
+    # Arrange
+    base_url = "http://example.com"
+    max_pages = 3
+    # Simulate extract_product_data returning different data for each page
+    mock_extract.side_effect = [
+        [{"title": "Page1 Prod1"}],
+        [{"title": "Page2 Prod1"}, {"title": "Page2 Prod2"}],
+        [{"title": "Page3 Prod1"}],
+    ]
+    caplog.set_level(logging.INFO)
+
+    # Act
+    result = extract.scrape_all_pages(base_url, max_pages)
+
+    # Assert
+    assert len(result) == 4
+    assert result[0]["title"] == "Page1 Prod1"
+    assert result[1]["title"] == "Page2 Prod1"
+    assert result[3]["title"] == "Page3 Prod1"
+
+    # Check calls to extract_product_data
+    expected_calls = [
+        call("http://example.com/"),
+        call("http://example.com/page2"),
+        call("http://example.com/page3"),
+    ]
+    mock_extract.assert_has_calls(expected_calls)
+    assert mock_extract.call_count == max_pages
+
+    # Check calls to time.sleep (should be max_pages - 1)
+    assert mock_sleep.call_count == max_pages - 1
+    mock_sleep.assert_called_with(REQUEST_DELAY)
+
+    assert "Scraping Page 1: http://example.com/" in caplog.text
+    assert "Scraping Page 2: http://example.com/page2" in caplog.text
+    assert "Scraping Page 3: http://example.com/page3" in caplog.text
+    assert "Accumulated 1 products after scraping page 1." in caplog.text
+    assert "Accumulated 3 products after scraping page 2." in caplog.text
+    assert "Accumulated 4 products after scraping page 3." in caplog.text
+    assert f"Finished scraping {max_pages} pages." in caplog.text
+
+
+@patch("utils.extract.extract_product_data")
+@patch("utils.extract.time.sleep")
+def test_scrape_all_pages_with_failures_and_empty(mock_sleep, mock_extract, caplog):
+    """Tests scraping with a mix of successful, failed, and empty pages."""
+    # Arrange
+    base_url = "http://complex.com/"  # Test trailing slash handling
+    max_pages = 4
+    mock_extract.side_effect = [
+        [{"title": "Page1 Prod1"}],  # Page 1 success
+        None,  # Page 2 fails
+        [],  # Page 3 empty
+        [{"title": "Page4 Prod1"}],  # Page 4 success
+    ]
+    caplog.set_level(logging.INFO)
+
+    # Act
+    result = extract.scrape_all_pages(base_url, max_pages)
+
+    # Assert
+    assert len(result) == 2
+    assert result[0]["title"] == "Page1 Prod1"
+    assert result[1]["title"] == "Page4 Prod1"
+
+    # Check calls to extract_product_data
+    expected_calls = [
+        call("http://complex.com/"),
+        call("http://complex.com/page2"),
+        call("http://complex.com/page3"),
+        call("http://complex.com/page4"),
+    ]
+    mock_extract.assert_has_calls(expected_calls)
+    assert mock_extract.call_count == max_pages
+
+    # Check calls to time.sleep (called after page 1 success, not after page 2 fail, after page 3 empty/success)
+    assert mock_sleep.call_count == 2  # After page 1 and page 3
+    mock_sleep.assert_called_with(REQUEST_DELAY)
+
+    assert "Failed to fetch/process page 2 (http://complex.com/page2)" in caplog.text
+    assert "No products found on page 3 (http://complex.com/page3)" in caplog.text
+    assert "Accumulated 1 products after scraping page 1." in caplog.text
+    # No accumulation message for page 2 or 3
+    assert "Accumulated 2 products after scraping page 4." in caplog.text
+    assert f"Finished scraping {max_pages} pages." in caplog.text
+
+
+@patch("utils.extract.extract_product_data")
+@patch("utils.extract.time.sleep")
+def test_scrape_all_pages_single_page(mock_sleep, mock_extract):
+    """Tests scraping only one page."""
+    # Arrange
+    base_url = "http://single.com"
+    max_pages = 1
+    mock_extract.return_value = [{"title": "SinglePageProd"}]
+
+    # Act
+    result = extract.scrape_all_pages(base_url, max_pages)
+
+    # Assert
+    assert len(result) == 1
+    mock_extract.assert_called_once_with("http://single.com/")
+    mock_sleep.assert_not_called()  # No delay after the last page
