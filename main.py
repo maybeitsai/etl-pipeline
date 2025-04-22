@@ -112,7 +112,7 @@ def _run_extraction(config: Dict[str, Any]) -> Optional[list]:
             len(all_extracted_data),
         )
         return all_extracted_data
-    except Exception as e:  # pylint: disable=broad-except
+    except Exception as e:  
         logging.error("Extraction failed: %s", e, exc_info=True)
         return None
 
@@ -141,7 +141,7 @@ def _run_transformation(extracted_data: list) -> Optional[pd.DataFrame]:
             "Sample of transformed data:\n%s", transformed_df.head().to_string()
         )
         return transformed_df
-    except Exception as e:  # pylint: disable=broad-except
+    except Exception as e:  
         logging.error("Transformation failed: %s", e, exc_info=True)
         return None
 
@@ -156,7 +156,7 @@ def _load_data_to_csv(dataframe: pd.DataFrame, config: Dict[str, Any]) -> None:
         else:
             # load_to_csv returning False indicates a handled failure
             logging.error("Failed to load data to %s", filepath)
-    except Exception as e:  # pylint: disable=broad-except
+    except Exception as e:  
         logging.error(
             "Unhandled exception during CSV load to %s: %s", filepath, e, exc_info=True
         )
@@ -193,7 +193,7 @@ def _load_data_to_gsheets(dataframe: pd.DataFrame, config: Dict[str, Any]) -> No
             logging.info("Successfully loaded data to Google Sheets.")
         else:
             logging.error("Failed to load data to Google Sheets.")
-    except Exception as e:  # pylint: disable=broad-except
+    except Exception as e:  
         logging.error(
             "Unhandled exception during Google Sheets load: %s", e, exc_info=True
         )
@@ -219,7 +219,7 @@ def _load_data_to_postgres(dataframe: pd.DataFrame, config: Dict[str, Any]) -> N
             logging.info("Successfully loaded data to PostgreSQL.")
         else:
             logging.error("Failed to load data to PostgreSQL.")
-    except Exception as e:  # pylint: disable=broad-except
+    except Exception as e:  
         logging.error(
             "Unhandled exception during PostgreSQL load: %s", e, exc_info=True
         )
@@ -272,7 +272,7 @@ def main() -> None:
     except ValueError as e:
         logging.error("Configuration error: %s", e)
         sys.exit(1)
-    except Exception as e:  # pylint: disable=broad-except
+    except Exception as e:  
         logging.critical("An unexpected error occurred: %s", e, exc_info=True)
         sys.exit(1)
 
