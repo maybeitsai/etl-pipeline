@@ -1,82 +1,35 @@
 # tests/test_transform.py
 """
-Unit tests for the utils.transform module.
+Unit tests for the transform module (utils/transform.py).
 """
-
 import logging
-import pytest
-import pandas as pd
 from datetime import timezone
-from unittest.mock import patch
-from freezegun import freeze_time
+from unittest.mock import MagicMock, patch
 
-# Assuming utils is importable from the project root
-from utils import transform
+import pandas as pd
+import pytest
+from pandas.testing import assert_frame_equal, assert_series_equal
+
 from utils.constants import (
     FINAL_SCHEMA_TYPE_MAPPING,
     REQUIRED_COLUMNS,
     USD_TO_IDR_RATE,
 )
-
-# --- Tests for Cleaning Functions ---
-
-
-@pytest.mark.parametrize(
-    "price_str, expected",
-    [
-        ("$19.99", 19.99),
-        (" $ 1,234.56 ", 1234.56),
-        ("Price Unavailable", None),
-        ("price unavailable", None),
-        (None, None),
-        ("Invalid", None),
-        ("10.50", 10.50),
-        ("$", None), # Only symbol
-    ],
+from utils.transform import (
+    _add_timestamp,
+    _apply_business_logic,
+    _filter_invalid_rows,
+    _initial_clean_and_parse,
+    _prepare_final_schema,
+    _remove_nulls_and_duplicates,
+    clean_colors,
+    clean_price,
+    clean_rating,
+    transform_data,
 )
-def test_clean_price(price_str, expected):
-    assert transform.clean_price(price_str) == expected
 
-
-@pytest.mark.parametrize(
-    "rating_str, expected",
-    [
-        ("⭐ 4.5 / 5", 4.5),
-        ("Rating: 3.8 stars", 3.8),
-        (" 4 ", 4.0),
-        ("4.2", 4.2),
-        ("Not Rated", None),
-        ("invalid rating", None),
-        (None, None),
-        ("No rating", None),
-        ("5/5", 5.0), # Simple fraction format
-    ],
-)
-def test_clean_rating(rating_str, expected):
-    assert transform.clean_rating(rating_str) == expected
-
-
-@pytest.mark.parametrize(
-    "colors_str, expected",
-    [
-        ("Available in 3 Colors", 3),
-        (" 5 colors ", 5),
-        ("1 Color", 1),
-        ("Single color", None), # No number
-        ("Color: Blue", None), # No number
-        (None, None),
-        ("Invalid", None),
-    ],
-)
-def test_clean_colors(colors_str, expected):
-    assert transform.clean_colors(colors_str) == expected
-
-
-# --- Tests for transform_data ---
-
-# Sample data covering various scenarios
+# --- Test Data ---
 SAMPLE_RAW_DATA = [
-    # Valid full record
     {
         "title": " T-shirt 1 ",
         "price": "$10.00",
@@ -86,7 +39,6 @@ SAMPLE_RAW_DATA = [
         "gender": " Men",
         "image_url": "url1",
     },
-    # Valid record, different values
     {
         "title": "Pants 2",
         "price": "$25.50",
@@ -96,8 +48,7 @@ SAMPLE_RAW_DATA = [
         "gender": "Women",
         "image_url": "url2",
     },
-    # Duplicate of first record (should be removed)
-    {
+    {  # Duplicate of first item
         "title": " T-shirt 1 ",
         "price": "$10.00",
         "rating": "⭐ 4.5 / 5",
@@ -106,8 +57,7 @@ SAMPLE_RAW_DATA = [
         "gender": " Men",
         "image_url": "url1",
     },
-    # Price unavailable (should become None, potentially dropped if required)
-    {
+    {  # Price unavailable
         "title": "Jacket 3",
         "price": "Price Unavailable",
         "rating": "⭐ 4.0 / 5",
@@ -116,8 +66,7 @@ SAMPLE_RAW_DATA = [
         "gender": "Unisex",
         "image_url": "url3",
     },
-    # Unknown Product (should be filtered out)
-    {
+    {  # Unknown Product title
         "title": "Unknown Product",
         "price": "$50.00",
         "rating": "⭐ 5.0 / 5",
@@ -126,8 +75,7 @@ SAMPLE_RAW_DATA = [
         "gender": "Men",
         "image_url": "url4",
     },
-    # Rating not rated (should become None, potentially dropped if required)
-    {
+    {  # Not Rated
         "title": "Shoes 5",
         "price": "$120.00",
         "rating": "Not Rated",
@@ -136,8 +84,7 @@ SAMPLE_RAW_DATA = [
         "gender": "Women",
         "image_url": "url5",
     },
-    # Colors None (should become None, potentially dropped if required)
-    {
+    {  # Null colors
         "title": "Hat 6",
         "price": "$15.00",
         "rating": "⭐ 4.2 / 5",
@@ -146,8 +93,7 @@ SAMPLE_RAW_DATA = [
         "gender": "Unisex",
         "image_url": "url6",
     },
-    # Size None (should become None, potentially dropped if required)
-    {
+    {  # Null size (required column)
         "title": "Belt 7",
         "price": "$30.00",
         "rating": "⭐ 4.9 / 5",
@@ -156,18 +102,7 @@ SAMPLE_RAW_DATA = [
         "gender": "Unisex",
         "image_url": "url7",
     },
-    # Image URL None (should become None, potentially dropped if required)
-    {
-        "title": "Item 9 No Img",
-        "price": "$40.00",
-        "rating": "⭐ 4.0 / 5",
-        "colors": "1 color",
-        "size": "M",
-        "gender": "Women",
-        "image_url": None,
-    },
-    # Complete Item to check final schema
-    {
+    {  # Complete Item
         "title": "Complete Item 8",
         "price": "$75.00",
         "rating": "⭐ 4.1 / 5",
@@ -176,39 +111,61 @@ SAMPLE_RAW_DATA = [
         "gender": "Men",
         "image_url": "url8",
     },
+    {  # Null image_url (required column)
+        "title": "Item 9 No Img",
+        "price": "$40.00",
+        "rating": "⭐ 4.0 / 5",
+        "colors": "1 color",
+        "size": "M",
+        "gender": "Women",
+        "image_url": None,
+    },
+    {  # Invalid price format
+        "title": "Item 10 Invalid Price",
+        "price": "Free",
+        "rating": "4.3",
+        "colors": "1 color",
+        "size": "S",
+        "gender": "Men",
+        "image_url": "url10",
+    },
+    {  # Invalid rating format
+        "title": "Item 11 Invalid Rating",
+        "price": "$19.99",
+        "rating": "Good",
+        "colors": "2 colors",
+        "size": "M",
+        "gender": "Women",
+        "image_url": "url11",
+    },
+    {  # Invalid colors format
+        "title": "Item 12 Invalid Colors",
+        "price": "$29.99",
+        "rating": "4.6",
+        "colors": "Multiple shades",
+        "size": "L",
+        "gender": "Unisex",
+        "image_url": "url12",
+    },
+    { # Case variation for Unknown Product
+        "title": "unknown product 13",
+        "price": "$5.00",
+        "rating": "3.0",
+        "colors": "1 color",
+        "size": "XS",
+        "gender": "Kids",
+        "image_url": "url13",
+    }
 ]
 
-# Define expected output based on SAMPLE_RAW_DATA and transformation logic
-# Assuming REQUIRED_COLUMNS = ['title', 'price', 'image_url'] for this example
-# Rows with None in these columns after cleaning will be dropped.
-# Also, 'Unknown Product' is filtered, and duplicates are removed.
-
-# Expected intermediate values after cleaning/parsing:
-# T-shirt 1: price=10.0, rating=4.5, colors=3
-# Pants 2: price=25.5, rating=3.8, colors=5
-# Jacket 3: price=None, rating=4.0, colors=2 -> DROPPED (if price required)
-# Shoes 5: price=120.0, rating=None, colors=4 -> DROPPED (if rating required)
-# Hat 6: price=15.0, rating=4.2, colors=None -> DROPPED (if colors required)
-# Belt 7: price=30.0, rating=4.9, colors=1, size=None -> DROPPED (if size required)
-# Item 9 No Img: price=40.0, rating=4.0, colors=1, image_url=None -> DROPPED (if image_url required)
-# Complete Item 8: price=75.0, rating=4.1, colors=2
-
-# Let's assume REQUIRED_COLUMNS = ['title', 'price', 'image_url', 'size', 'gender']
-# Based on this, expected rows to survive:
-# T-shirt 1, Pants 2, Complete Item 8
-
-EXPECTED_TITLES = ["T-shirt 1", "Pants 2", "Complete Item 8"]
-EXPECTED_PRICES_IDR = [
-    10.00 * USD_TO_IDR_RATE,
-    25.50 * USD_TO_IDR_RATE,
-    75.00 * USD_TO_IDR_RATE,
-]
-EXPECTED_RATINGS = [4.5, 3.8, 4.1]
-EXPECTED_COLORS = [3, 5, 2]
-EXPECTED_SIZES = ["M", "L", "L"]
-EXPECTED_GENDERS = ["Men", "Women", "Men"]
-EXPECTED_IMAGE_URLS = ["url1", "url2", "url8"]
-EXPECTED_ROW_COUNT = 3
+# Expected DataFrame after full transformation (approximated, timestamp will vary)
+# Note: Rows with null required fields (size, image_url) and 'Unknown Product' are removed.
+# Note: Duplicate row is removed.
+# Note: Rows with unparseable price/rating/colors will have NaN/None for those fields initially,
+#       but `dropna` in `_remove_nulls_and_duplicates` based on REQUIRED_COLUMNS
+#       will remove rows if 'title', 'size', 'gender', 'image_url' are null.
+#       If price, rating, or colors become null but other required fields are present,
+#       the row should remain.
 EXPECTED_COLS = [
     "title",
     "price",
@@ -221,182 +178,498 @@ EXPECTED_COLS = [
 ]
 
 
-@freeze_time("2024-01-15 12:00:00 UTC") # Freeze time for consistent timestamp
-def test_transform_data_happy_path_and_cleaning(caplog):
-    """Tests the main transform_data function with various cleaning, filtering, and duplication."""
-    # Arrange
-    caplog.set_level(logging.INFO)
-    # Use a copy to avoid modifying the original list during tests
-    test_data = [d.copy() for d in SAMPLE_RAW_DATA]
+# --- Tests for Cleaning Functions ---
+@pytest.mark.parametrize(
+    "price_str, expected",
+    [
+        ("$10.00", 10.0),
+        (" $ 25.50 ", 25.5),
+        ("$1,200.99", 1200.99),
+        ("99.9", 99.9),
+        ("Price Unavailable", None),
+        ("unavailable", None),
+        (None, None),
+        ("", None),
+        ("abc", None),
+        (100, None),  # Handles unexpected type input
+    ],
+)
+def test_clean_price(price_str, expected, caplog):
+    """Test clean_price function with various inputs."""
+    with caplog.at_level(logging.DEBUG):
+        assert clean_price(price_str) == expected
+        if expected is None and price_str not in [None, "Price Unavailable", "unavailable", ""]:
+            assert f"Could not parse price: '{price_str}'" in caplog.text
 
-    # Act
-    df_transformed = transform.transform_data(test_data)
 
-    # Assert
-    assert not df_transformed.empty
-    assert len(df_transformed) == EXPECTED_ROW_COUNT
-    assert list(df_transformed.columns) == EXPECTED_COLS
+@pytest.mark.parametrize(
+    "rating_str, expected",
+    [
+        ("⭐ 4.5 / 5", 4.5),
+        (" 3.8 / 5 stars ", 3.8),
+        ("Rating: 4.0", 4.0),
+        ("5/5", 5.0),
+        ("4", 4.0),
+        (" 4.2 ", 4.2),
+        ("Not Rated", None),
+        ("invalid rating", None),
+        (None, None),
+        ("", None),
+        ("abc", None),
+        ("No rating available", None),
+        ("4/ stars", 4.0), # Should still find the number
+        (4.5, None), # Handles unexpected type input
+    ],
+)
+def test_clean_rating(rating_str, expected, caplog):
+    """Test clean_rating function with various inputs."""
+    with caplog.at_level(logging.DEBUG):
+        assert clean_rating(rating_str) == expected
+        if expected is None and rating_str not in [None, "Not Rated", "invalid rating", ""]:
+             assert f"Could not parse rating: '{rating_str}'" in caplog.text
 
-    # Check logs for filtering/dropping
-    assert "Filtered 1 rows with 'Unknown Product' title." in caplog.text
-    # Calculate expected dropped rows (total - unknown - duplicates - final)
-    # Initial = 10, Unknown = 1, Duplicate = 1 -> 8 remain before dropna
-    # Final = 3, so 8 - 3 = 5 dropped by dropna
-    # The exact number depends heavily on REQUIRED_COLUMNS
-    # Let's check if the dropna log message exists if rows were dropped
-    initial_rows = len(SAMPLE_RAW_DATA)
-    if initial_rows - 1 - 1 > EXPECTED_ROW_COUNT: # If (initial - unknown - duplicate) > final
-         assert "Removed" in caplog.text and "rows with null values in required columns" in caplog.text
+
+@pytest.mark.parametrize(
+    "colors_str, expected",
+    [
+        ("3 colors", 3),
+        ("Available in 5 Colors", 5),
+        (" 1 Color ", 1),
+        ("10", 10), # Although unlikely format, check number parsing
+        (None, None),
+        ("", None),
+        ("Multiple colors", None), # Contains 'color' but no number
+        ("abc", None),
+        (3, None), # Handles unexpected type input
+    ],
+)
+def test_clean_colors(colors_str, expected, caplog):
+    """Test clean_colors function with various inputs."""
+    with caplog.at_level(logging.DEBUG):
+        assert clean_colors(colors_str) == expected
+        if expected is None and colors_str is not None and colors_str != "":
+            if "color" in colors_str.lower() and not any(char.isdigit() for char in colors_str):
+                 assert f"Found 'color' text but no number in: '{colors_str}'" in caplog.text
+            else:
+                 assert f"Could not parse colors: '{colors_str}'" in caplog.text
+
+
+# --- Tests for Transformation Steps ---
+
+def test_initial_clean_and_parse():
+    """Test the initial cleaning and parsing step."""
+    df_raw = pd.DataFrame(SAMPLE_RAW_DATA[:2]) # Use first two valid items
+    df_cleaned = _initial_clean_and_parse(df_raw.copy())
+
+    assert "cleaned_price_usd" in df_cleaned.columns
+    assert "cleaned_rating" in df_cleaned.columns
+    assert "cleaned_colors" in df_cleaned.columns
+
+    # Check stripping
+    assert df_cleaned.loc[0, "title"] == "T-shirt 1"
+    assert df_cleaned.loc[0, "size"] == "M"
+    assert df_cleaned.loc[0, "gender"] == "Men"
+
+    # Check cleaning results
+    assert df_cleaned.loc[0, "cleaned_price_usd"] == 10.0
+    assert df_cleaned.loc[1, "cleaned_price_usd"] == 25.5
+    assert df_cleaned.loc[0, "cleaned_rating"] == 4.5
+    assert df_cleaned.loc[1, "cleaned_rating"] == 3.8
+    assert df_cleaned.loc[0, "cleaned_colors"] == 3
+    assert df_cleaned.loc[1, "cleaned_colors"] == 5
+
+def test_initial_clean_and_parse_missing_columns():
+    """Test initial cleaning when optional columns are missing."""
+    data = [{"price": "$10", "rating": "4", "colors": "2"}] # Missing title, size etc.
+    df_raw = pd.DataFrame(data)
+    df_cleaned = _initial_clean_and_parse(df_raw.copy())
+    # Should run without error, applying cleaning to existing columns
+    assert df_cleaned.loc[0, "cleaned_price_usd"] == 10.0
+    assert df_cleaned.loc[0, "cleaned_rating"] == 4.0
+    assert df_cleaned.loc[0, "cleaned_colors"] == 2
+
+
+@patch("utils.transform.pd.Timestamp")
+def test_add_timestamp(mock_timestamp):
+    """Test adding the timestamp column with timezone conversion."""
+    now_utc = pd.Timestamp("2023-10-27 10:00:00", tz="UTC")
+    now_jakarta = now_utc.tz_convert("Asia/Jakarta")
+    mock_ts_obj = MagicMock()
+    mock_ts_obj.tz_convert.return_value = now_jakarta
+    mock_timestamp.now.return_value = mock_ts_obj
+
+    df = pd.DataFrame({"col1": [1, 2]})
+    df_ts = _add_timestamp(df.copy())
+
+    assert "timestamp" in df_ts.columns
+    pd.testing.assert_series_equal(
+        df_ts["timestamp"], pd.Series([now_jakarta, now_jakarta], name="timestamp"), check_names=False
+    )
+    mock_timestamp.now.assert_called_once_with(tz="UTC")
+    mock_ts_obj.tz_convert.assert_called_once_with("Asia/Jakarta")
+
+
+@patch("utils.transform.pd.Timestamp")
+def test_add_timestamp_tz_conversion_error(mock_timestamp, caplog):
+    """Test fallback to UTC if timezone conversion fails."""
+    now_utc = pd.Timestamp("2023-10-27 10:00:00", tz="UTC")
+    mock_ts_obj = MagicMock()
+    mock_ts_obj.tz_convert.side_effect = Exception("TZ database error")
+    mock_timestamp.now.return_value = mock_ts_obj
+
+    df = pd.DataFrame({"col1": [1, 2]})
+    with caplog.at_level(logging.WARNING):
+        df_ts = _add_timestamp(df.copy())
+
+    assert "timestamp" in df_ts.columns
+    # Should contain the original UTC timestamp
+    pd.testing.assert_series_equal(
+        df_ts["timestamp"], pd.Series([now_utc, now_utc], name="timestamp"), check_names=False
+    )
+    assert "Failed to convert timezone to Asia/Jakarta" in caplog.text
+    assert "Using UTC." in caplog.text
+    mock_timestamp.now.assert_called_with(tz="UTC") # Called twice: once for try, once for except
+    assert mock_timestamp.now.call_count == 2
+    mock_ts_obj.tz_convert.assert_called_once_with("Asia/Jakarta")
+
+
+def test_filter_invalid_rows(caplog):
+    """Test filtering rows with 'Unknown Product' title."""
+    df = pd.DataFrame({
+        "title": ["Product A", "Unknown Product", "Product B", "unknown product C"],
+        "price": [10, 50, 20, 5],
+    })
+    with caplog.at_level(logging.INFO):
+        df_filtered = _filter_invalid_rows(df.copy())
+
+    expected_df = pd.DataFrame({
+        "title": ["Product A", "Product B"],
+        "price": [10, 20],
+    }, index=[0, 2]) # Keep original index
+
+    assert_frame_equal(df_filtered, expected_df)
+    assert "Filtered 2 rows with 'Unknown Product' title." in caplog.text
+
+def test_filter_invalid_rows_no_invalid():
+    """Test filtering when no rows are invalid."""
+    df = pd.DataFrame({
+        "title": ["Product A", "Product B"],
+        "price": [10, 20],
+    })
+    df_filtered = _filter_invalid_rows(df.copy())
+    assert_frame_equal(df_filtered, df) # Should be unchanged
+
+
+def test_filter_invalid_rows_empty_df():
+    """Test filtering with an empty DataFrame."""
+    df = pd.DataFrame({"title": [], "price": []})
+    df_filtered = _filter_invalid_rows(df.copy())
+    assert df_filtered.empty
+
+
+def test_apply_business_logic():
+    """Test the currency conversion logic."""
+    df = pd.DataFrame({
+        "cleaned_price_usd": [10.0, 25.5, None, 50.0]
+    })
+    df_logic = _apply_business_logic(df.copy())
+
+    assert "price_idr" in df_logic.columns
+    expected_idr = pd.Series([
+        10.0 * USD_TO_IDR_RATE,
+        25.5 * USD_TO_IDR_RATE,
+        None, # NaN * rate = NaN
+        50.0 * USD_TO_IDR_RATE
+    ], name="price_idr")
+
+    assert_series_equal(df_logic["price_idr"], expected_idr, check_dtype=False)
+
+def test_apply_business_logic_empty_df():
+    """Test business logic with an empty DataFrame."""
+    df = pd.DataFrame({"cleaned_price_usd": []})
+    df_logic = _apply_business_logic(df.copy())
+    assert "price_idr" in df_logic.columns
+    assert df_logic.empty
+
+
+def test_prepare_final_schema():
+    """Test column selection, renaming, and type enforcement."""
+    # Create a DataFrame simulating state before this step
+    now = pd.Timestamp.now(tz="Asia/Jakarta")
+    df_intermediate = pd.DataFrame({
+        "title": ["Product A", "Product B"],
+        "cleaned_price_usd": [10.0, 20.0], # Will be dropped
+        "price_idr": [160000.0, 320000.0],
+        "cleaned_rating": [4.5, 4.0],
+        "cleaned_colors": [3, 1],
+        "size": ["M", "S"],
+        "gender": ["Men", "Women"],
+        "image_url": ["urlA", "urlB"],
+        "timestamp": [now, now],
+        "extra_col": ["x", "y"] # Will be dropped
+    })
+
+    df_final = _prepare_final_schema(df_intermediate.copy())
+
+    # Check columns exist and are renamed
+    assert list(df_final.columns) == EXPECTED_COLS
+    assert "extra_col" not in df_final.columns
+    assert "cleaned_price_usd" not in df_final.columns
+
+    # Check renaming results
+    pd.testing.assert_series_equal(df_final["price"], df_intermediate["price_idr"], check_names=False)
+    pd.testing.assert_series_equal(df_final["rating"], df_intermediate["cleaned_rating"], check_names=False)
+    pd.testing.assert_series_equal(df_final["colors"], df_intermediate["cleaned_colors"], check_names=False)
+
+
+    # Check types (use FINAL_SCHEMA_TYPE_MAPPING for comparison)
+    expected_dtypes = pd.Series(FINAL_SCHEMA_TYPE_MAPPING)
+    expected_dtypes["timestamp"] = df_intermediate["timestamp"].dtype # Get the specific tz-aware type
+
+    assert df_final.dtypes.astype(str).equals(expected_dtypes.astype(str))
+
+
+def test_prepare_final_schema_missing_expected_cols(caplog):
+    """Test schema preparation when expected columns are missing."""
+    df_intermediate = pd.DataFrame({
+        "title": ["A"],
+        "price_idr": [1000.0],
+        # Missing cleaned_rating, cleaned_colors, size, gender, image_url, timestamp
+    })
+    with caplog.at_level(logging.ERROR):
+        df_final = _prepare_final_schema(df_intermediate.copy())
+
+    assert df_final.empty
+    assert "Missing expected columns before final selection" in caplog.text
+    assert "'cleaned_rating'" in caplog.text # Example check
+
+
+def test_prepare_final_schema_type_conversion_error(caplog):
+    """Test schema preparation when type conversion fails."""
+    now = pd.Timestamp.now(tz="Asia/Jakarta")
+    df_intermediate = pd.DataFrame({
+        "title": ["Product A"],
+        "price_idr": ["not_a_number"], # Invalid type for float conversion
+        "cleaned_rating": [4.5],
+        "cleaned_colors": [3],
+        "size": ["M"],
+        "gender": ["Men"],
+        "image_url": ["urlA"],
+        "timestamp": [now],
+    })
+
+    with caplog.at_level(logging.ERROR):
+        # Mock astype to raise an error
+        with patch.object(pd.DataFrame, 'astype', side_effect=ValueError("Cannot cast")) as mock_astype:
+            df_final = _prepare_final_schema(df_intermediate.copy())
+
+    # Should return the DataFrame before the failed type cast attempt
+    assert not df_final.empty
+    assert list(df_final.columns) == ['title', 'price', 'rating', 'colors', 'size', 'gender', 'image_url', 'timestamp'] # After rename
+    assert df_final.loc[0, 'price'] == 'not_a_number' # Original invalid value
+    assert "Error during final data type conversion: Cannot cast" in caplog.text
+    mock_astype.assert_called_once()
+
+
+def test_prepare_final_schema_incorrect_timestamp_type():
+    """Test schema preparation when timestamp column is not datetime."""
+    df_intermediate = pd.DataFrame({
+        "title": ["Product A"],
+        "price_idr": [160000.0],
+        "cleaned_rating": [4.5],
+        "cleaned_colors": [3],
+        "size": ["M"],
+        "gender": ["Men"],
+        "image_url": ["urlA"],
+        "timestamp": ["2023-10-27 10:00:00+07:00"], # String instead of datetime
+    })
+    df_final = _prepare_final_schema(df_intermediate.copy())
+    assert pd.api.types.is_datetime64_any_dtype(df_final["timestamp"])
+    assert df_final.loc[0,"timestamp"] == pd.Timestamp("2023-10-27 10:00:00+07:00")
+
+
+def test_remove_nulls_and_duplicates(caplog):
+    """Test removal of nulls in required columns and duplicates."""
+    now = pd.Timestamp.now(tz="Asia/Jakarta")
+    df_with_issues = pd.DataFrame({
+        "title": ["A", "B", "C", "A", "D", "E"], # Duplicate A
+        "price": [10.0, 20.0, 30.0, 10.0, 40.0, 50.0],
+        "rating": [4, 5, None, 4, 3, 2],
+        "colors": [1, 2, 3, 1, 4, 5],
+        "size": ["S", "M", None, "S", "L", "M"], # Null for C
+        "gender": ["M", "F", "M", "M", "F", "F"],
+        "image_url": ["url1", "url2", "url3", "url1", None, "url5"], # Null for D
+        "timestamp": [now] * 6,
+    })
+    # Manually define which columns are required for this test context
+    # This assumes REQUIRED_COLUMNS = ["title", "size", "gender", "image_url"]
+    with patch("utils.transform.REQUIRED_COLUMNS", ["title", "size", "gender", "image_url"]):
+        with caplog.at_level(logging.INFO):
+            df_cleaned = _remove_nulls_and_duplicates(df_with_issues.copy())
+
+    expected_df = pd.DataFrame({
+        "title": ["A", "B", "E"],
+        "price": [10.0, 20.0, 50.0],
+        "rating": [4.0, 5.0, 2.0],
+        "colors": [1, 2, 5],
+        "size": ["S", "M", "M"],
+        "gender": ["M", "F", "F"],
+        "image_url": ["url1", "url2", "url5"],
+        "timestamp": [now] * 3,
+    }, index=[0, 1, 5]) # Keep original indices
+
+    assert_frame_equal(df_cleaned, expected_df)
+    assert "Removed 2 rows with null values in required columns" in caplog.text
     assert "Removed 1 duplicate rows." in caplog.text
-    assert f"Transformation complete. Final rows: {EXPECTED_ROW_COUNT}" in caplog.text
 
-    # Check data content (sort by title for consistent comparison)
-    df_transformed = df_transformed.sort_values(by="title").reset_index(drop=True)
 
-    pd.testing.assert_series_equal(
-        df_transformed["title"], pd.Series(sorted(EXPECTED_TITLES)), check_names=False
-    )
-    # Need to sort expected values based on sorted titles
-    sort_indices = [EXPECTED_TITLES.index(t) for t in sorted(EXPECTED_TITLES)]
-    pd.testing.assert_series_equal(
-        df_transformed["price"], pd.Series([EXPECTED_PRICES_IDR[i] for i in sort_indices]), check_dtype=False, check_names=False
-    )
-    pd.testing.assert_series_equal(
-        df_transformed["rating"], pd.Series([EXPECTED_RATINGS[i] for i in sort_indices]), check_dtype=False, check_names=False
-    )
-    pd.testing.assert_series_equal(
-        df_transformed["colors"], pd.Series([EXPECTED_COLORS[i] for i in sort_indices]), check_dtype=False, check_names=False
-    )
-    pd.testing.assert_series_equal(
-        df_transformed["size"], pd.Series([EXPECTED_SIZES[i] for i in sort_indices]), check_names=False
-    )
-    pd.testing.assert_series_equal(
-        df_transformed["gender"], pd.Series([EXPECTED_GENDERS[i] for i in sort_indices]), check_names=False
-    )
-    pd.testing.assert_series_equal(
-        df_transformed["image_url"], pd.Series([EXPECTED_IMAGE_URLS[i] for i in sort_indices]), check_names=False
-    )
+def test_remove_nulls_and_duplicates_no_issues():
+    """Test the function when no nulls or duplicates exist."""
+    now = pd.Timestamp.now(tz="Asia/Jakarta")
+    df_clean = pd.DataFrame({
+        "title": ["A", "B"],
+        "price": [10.0, 20.0],
+        "rating": [4, 5],
+        "colors": [1, 2],
+        "size": ["S", "M"],
+        "gender": ["M", "F"],
+        "image_url": ["url1", "url2"],
+        "timestamp": [now] * 2,
+    })
+    with patch("utils.transform.REQUIRED_COLUMNS", ["title", "size", "gender", "image_url"]):
+        df_result = _remove_nulls_and_duplicates(df_clean.copy())
+    assert_frame_equal(df_result, df_clean)
 
-    # Check timestamp (should be consistent due to freeze_time)
-    expected_timestamp = pd.Timestamp("2024-01-15 12:00:00+0000", tz="UTC").tz_convert("Asia/Jakarta")
-    assert all(df_transformed["timestamp"] == expected_timestamp)
 
-    # Check final dtypes
-    for col, dtype in FINAL_SCHEMA_TYPE_MAPPING.items():
-        assert df_transformed[col].dtype == dtype
-    assert pd.api.types.is_datetime64_any_dtype(df_transformed["timestamp"])
-    assert df_transformed["timestamp"].dt.tz == timezone(pd.Timedelta(hours=7)) # Asia/Jakarta is UTC+7
+def test_remove_nulls_and_duplicates_empty_df():
+    """Test the function with an empty DataFrame."""
+    df_empty = pd.DataFrame(columns=EXPECTED_COLS)
+    df_result = _remove_nulls_and_duplicates(df_empty.copy())
+    assert df_result.empty
+
+
+def test_remove_nulls_and_duplicates_empty_after_na(caplog):
+    """Test when DataFrame becomes empty after dropping NAs."""
+    now = pd.Timestamp.now(tz="Asia/Jakarta")
+    df_all_na = pd.DataFrame({
+        "title": ["A", "B"],
+        "price": [10.0, 20.0],
+        "rating": [4, 5],
+        "colors": [1, 2],
+        "size": [None, None], # All required 'size' are null
+        "gender": ["M", "F"],
+        "image_url": ["url1", "url2"],
+        "timestamp": [now] * 2,
+    })
+    with patch("utils.transform.REQUIRED_COLUMNS", ["size"]):
+        with caplog.at_level(logging.WARNING):
+            df_result = _remove_nulls_and_duplicates(df_all_na.copy())
+    assert df_result.empty
+    assert "DataFrame empty after removing rows with null values." in caplog.text
+
+
+# --- Tests for Main Transformation Function ---
+
+@patch("utils.transform._add_timestamp", side_effect=lambda df: df.assign(timestamp=pd.Timestamp("2023-01-01", tz="Asia/Jakarta")))
+@patch("utils.transform.REQUIRED_COLUMNS", ["title", "size", "gender", "image_url"]) # Define for test consistency
+def test_transform_data_success(mock_add_ts, caplog):
+    """Test the main transform_data function with valid sample data."""
+
+    # Expected output based on SAMPLE_RAW_DATA and the mocked timestamp/required cols
+    # Rows removed:
+    # - Index 2 (duplicate)
+    # - Index 4 (Unknown Product)
+    # - Index 7 (Null size)
+    # - Index 9 (Null image_url)
+    # - Index 13 (unknown product)
+    # Remaining indices: 0, 1, 3, 5, 6, 8, 10, 11, 12
+    expected_data = {
+        'title': ['T-shirt 1', 'Pants 2', 'Jacket 3', 'Shoes 5', 'Hat 6', 'Complete Item 8', 'Item 10 Invalid Price', 'Item 11 Invalid Rating', 'Item 12 Invalid Colors'],
+        'price': [10.0 * USD_TO_IDR_RATE, 25.5 * USD_TO_IDR_RATE, None, 120.0 * USD_TO_IDR_RATE, 15.0 * USD_TO_IDR_RATE, 75.0 * USD_TO_IDR_RATE, None, 19.99 * USD_TO_IDR_RATE, 29.99 * USD_TO_IDR_RATE],
+        'rating': [4.5, 3.8, 4.0, None, 4.2, 4.1, 4.3, None, 4.6],
+        'colors': [3, 5, 2, 4, None, 2, 1, 2, None],
+        'size': ['M', 'L', 'S', 'M', 'OS', 'L', 'S', 'M', 'L'],
+        'gender': ['Men', 'Women', 'Unisex', 'Women', 'Unisex', 'Men', 'Men', 'Women', 'Unisex'],
+        'image_url': ['url1', 'url2', 'url3', 'url5', 'url6', 'url8', 'url10', 'url11', 'url12'],
+        'timestamp': pd.Timestamp("2023-01-01", tz="Asia/Jakarta")
+    }
+    # Convert to float where applicable for comparison precision
+    expected_data['price'] = [float(p) if p is not None else None for p in expected_data['price']]
+    expected_data['rating'] = [float(r) if r is not None else None for r in expected_data['rating']]
+    expected_data['colors'] = [int(c) if c is not None else None for c in expected_data['colors']]
+
+    expected_df = pd.DataFrame(expected_data)
+    # Apply final schema types
+    expected_df = expected_df.astype({
+        'price': 'float64',
+        'rating': 'float64',
+        'colors': 'float64' # Pandas uses float for Int Nullable type
+    })
+    # Set colors back to Int64 (nullable integer) after potential float conversion during creation
+    expected_df['colors'] = expected_df['colors'].astype(pd.Int64Dtype())
+
+
+    with caplog.at_level(logging.INFO):
+        transformed_df = transform_data(SAMPLE_RAW_DATA)
+
+    # Sort by title to ensure consistent order for comparison
+    transformed_df = transformed_df.sort_values(by='title').reset_index(drop=True)
+    expected_df = expected_df.sort_values(by='title').reset_index(drop=True)
+
+    assert not transformed_df.empty
+    assert len(transformed_df) == 9
+    assert mock_add_ts.called # Ensure mocked function was hit
+    assert "Transformation complete. Final rows: 9 (removed 5 rows)." in caplog.text
+
+    # Compare DataFrames (handle potential float precision issues)
+    assert_frame_equal(transformed_df, expected_df, check_dtype=True, rtol=1e-5)
 
 
 def test_transform_data_empty_input(caplog):
-    """Tests transform_data with an empty input list."""
-    # Arrange
-    caplog.set_level(logging.WARNING)
-
-    # Act
-    df_transformed = transform.transform_data([])
-
-    # Assert
-    assert df_transformed.empty
+    """Test transform_data with an empty input list."""
+    with caplog.at_level(logging.WARNING):
+        result_df = transform_data([])
+    assert result_df.empty
     assert "Received empty list for transformation." in caplog.text
 
 
-def test_transform_data_all_invalid_input(caplog):
-    """Tests transform_data where all input rows are filtered out or invalid."""
-    # Arrange
-    test_data = [
-        {"title": "Unknown Product", "price": "$10", "rating": "4", "colors": "1", "size": "S", "gender": "M", "image_url": "url"},
-        {"title": "Valid Title But Missing Required", "price": None, "rating": "4", "colors": "1", "size": "S", "gender": "M", "image_url": "url"}, # Assume price is required
-    ]
-    # Modify REQUIRED_COLUMNS temporarily for this test if needed, or ensure price is required
-    original_required = transform.REQUIRED_COLUMNS
-    transform.REQUIRED_COLUMNS = ['title', 'price'] # Ensure price causes dropna
-    caplog.set_level(logging.INFO)
-
-    # Act
-    df_transformed = transform.transform_data(test_data)
-
-    # Assert
-    assert df_transformed.empty
-    assert "Filtered 1 rows with 'Unknown Product' title." in caplog.text
-    assert "Removed 1 rows with null values in required columns" in caplog.text # The second row
-    assert "Transformation complete. Final rows: 0" in caplog.text
-
-    # Restore original REQUIRED_COLUMNS
-    transform.REQUIRED_COLUMNS = original_required
+@patch("utils.transform._filter_invalid_rows", return_value=pd.DataFrame())
+def test_transform_data_empty_after_filter(mock_filter, caplog):
+    """Test transform_data when filtering results in an empty DataFrame."""
+    with caplog.at_level(logging.WARNING):
+        result_df = transform_data(SAMPLE_RAW_DATA[:1]) # Provide some data
+    assert result_df.empty
+    mock_filter.assert_called_once()
+    assert "DataFrame empty after filtering invalid rows." in caplog.text
 
 
-@patch("utils.transform._prepare_final_schema")
-def test_transform_data_final_schema_failure(mock_prepare_final, caplog):
-    """Tests transform_data when _prepare_final_schema fails (returns empty)."""
-    # Arrange
-    mock_prepare_final.return_value = pd.DataFrame() # Simulate failure
-    test_data = [SAMPLE_RAW_DATA[0].copy()] # Use one valid record
-    caplog.set_level(logging.ERROR)
+@patch("utils.transform._prepare_final_schema", return_value=pd.DataFrame())
+def test_transform_data_empty_after_schema_prep(mock_schema, caplog):
+    """Test transform_data when schema preparation returns an empty DataFrame."""
+    # Ensure the dataframe is not empty *before* schema prep is called
+    with patch("utils.transform._filter_invalid_rows", side_effect=lambda df: df):
+        with caplog.at_level(logging.ERROR):
+            result_df = transform_data(SAMPLE_RAW_DATA[:1]) # Provide some data
 
-    # Act
-    df_transformed = transform.transform_data(test_data)
-
-    # Assert
-    assert df_transformed.empty
+    assert result_df.empty
+    mock_schema.assert_called_once()
     assert "Failed during final schema preparation." in caplog.text
-    mock_prepare_final.assert_called_once()
-
-
-@patch("pandas.Timestamp", side_effect=Exception("Timezone DB not found"))
-def test_transform_data_timestamp_timezone_error(mock_timestamp, caplog):
-    """Tests fallback to UTC if timezone conversion fails."""
-    # Arrange
-    test_data = [SAMPLE_RAW_DATA[0].copy()] # Use one valid record
-    caplog.set_level(logging.WARNING)
-
-    # Act
-    df_transformed = transform.transform_data(test_data)
-
-    # Assert
-    assert not df_transformed.empty
-    assert "Failed to convert timezone to Asia/Jakarta" in caplog.text
-    assert "Using UTC." in caplog.text
-    assert pd.api.types.is_datetime64_any_dtype(df_transformed["timestamp"])
-    assert df_transformed["timestamp"].dt.tz == timezone.utc
 
 
 def test_transform_data_key_error(caplog):
-    """Tests transform_data when input dict is missing an expected key."""
-    # Arrange
-    # Missing 'price' which is used early in _initial_clean_and_parse
-    test_data = [
-        {
-            "title": " T-shirt 1 ",
-            # "price": "$10.00", # Missing
-            "rating": "⭐ 4.5 / 5",
-            "colors": "3 colors",
-            "size": " M ",
-            "gender": " Men",
-            "image_url": "url1",
-        }
-    ]
-    caplog.set_level(logging.ERROR)
-
-    # Act
-    df_transformed = transform.transform_data(test_data)
-
-    # Assert
-    assert df_transformed.empty
-    assert "Missing expected key during transformation: 'price'" in caplog.text
+    """Test transform_data handling KeyError (e.g., missing column in raw data)."""
+    invalid_data = [{"price": "$10"}] # Missing 'title' which is used early
+    with caplog.at_level(logging.ERROR):
+        result_df = transform_data(invalid_data)
+    assert result_df.empty
+    assert "Missing expected key during transformation: 'title'" in caplog.text
 
 
-@patch("utils.transform._apply_business_logic", side_effect=Exception("Unexpected calculation error"))
-def test_transform_data_unexpected_exception(mock_apply_logic, caplog):
-    """Tests graceful handling of unexpected exceptions during transformation steps."""
-    # Arrange
-    test_data = [SAMPLE_RAW_DATA[0].copy()] # Use one valid record
-    caplog.set_level(logging.ERROR)
-
-    # Act
-    df_transformed = transform.transform_data(test_data)
-
-    # Assert
-    assert df_transformed.empty
-    assert "An unexpected error occurred during data transformation" in caplog.text
-    assert "Unexpected calculation error" in caplog.text
+@patch("utils.transform.pd.DataFrame", side_effect=Exception("Test unexpected error"))
+def test_transform_data_unexpected_error(mock_df_init, caplog):
+    """Test transform_data handling unexpected exceptions."""
+    with caplog.at_level(logging.ERROR):
+        result_df = transform_data(SAMPLE_RAW_DATA[:1]) # Provide some data
+    assert result_df.empty
+    mock_df_init.assert_called_once()
+    assert "An unexpected error occurred during data transformation: Test unexpected error" in caplog.text
