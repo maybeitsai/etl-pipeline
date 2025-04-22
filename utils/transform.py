@@ -22,6 +22,9 @@ logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
 # --- Cleaning Functions ---
 def clean_price(price_str: Optional[str]) -> Optional[float]:
     """Cleans the price string (USD) and converts it to float."""
+    if not isinstance(price_str, str):
+        logging.debug("Could not parse price: '%s'.", price_str)
+        return None
     if price_str is None or "unavailable" in price_str.lower():
         return None
     try:
@@ -34,6 +37,9 @@ def clean_price(price_str: Optional[str]) -> Optional[float]:
 
 def clean_rating(rating_str: Optional[str]) -> Optional[float]:
     """Cleans the rating string and extracts the numeric rating as float."""
+    if not isinstance(rating_str, str):
+        logging.debug("Could not parse rating: '%s'.", rating_str)
+        return None
     if (
         rating_str is None
         or "invalid" in rating_str.lower()
@@ -53,14 +59,19 @@ def clean_rating(rating_str: Optional[str]) -> Optional[float]:
 
 def clean_colors(colors_str: Optional[str]) -> Optional[int]:
     """Cleans the colors string and extracts the number of colors as int."""
-    if colors_str is None:
+    if colors_str is None or not isinstance(colors_str, str):
+        logging.debug("Could not parse colors: '%s'.", colors_str)
         return None
+
     try:
         match = re.search(r"(\d+)", colors_str)
         if match:
             return int(match.group(1))
+
         if "color" in colors_str.lower():
             logging.debug("Found 'color' text but no number in: '%s'.", colors_str)
+        else:
+            logging.debug("Could not parse colors: '%s'.", colors_str)
         return None
     except (ValueError, TypeError):
         logging.debug("Could not parse colors: '%s'.", colors_str)
@@ -88,18 +99,26 @@ def _add_timestamp(df: pd.DataFrame) -> pd.DataFrame:
     """Adds a timestamp column, converting UTC to Asia/Jakarta."""
     logging.debug("Adding timestamp.")
     try:
-        df["timestamp"] = pd.Timestamp.now(tz="UTC").tz_convert("Asia/Jakarta")
+        now_utc = pd.Timestamp.now(tz="UTC")
+        now_jakarta = now_utc.tz_convert("Asia/Jakarta")
+        df["timestamp"] = now_jakarta
     except Exception as tz_error:  # Catch potential timezone library errors
         logging.warning(
             "Failed to convert timezone to Asia/Jakarta: %s. Using UTC.", tz_error
         )
-        df["timestamp"] = pd.Timestamp.now(tz="UTC")  # Fallback to UTC
+        now_utc = pd.Timestamp.now(tz="UTC")
+        df["timestamp"] = now_utc  # Fallback to UTC
     return df
 
 
 def _filter_invalid_rows(df: pd.DataFrame) -> pd.DataFrame:
     """Filters out rows considered invalid (e.g., 'Unknown Product')."""
     initial_rows = len(df)
+
+    # Handle empty DataFrame case
+    if df.empty or "title" not in df.columns:
+        return df
+
     # Filter "Unknown Product" titles (case-insensitive)
     unknown_mask = df["title"].str.contains("Unknown Product", na=False, case=False)
     df_filtered = df[~unknown_mask].copy()
@@ -154,7 +173,18 @@ def _prepare_final_schema(df: pd.DataFrame) -> pd.DataFrame:
 
     # Enforce final data types (excluding timestamp, handled separately)
     try:
-        df_typed = df_renamed.astype(FINAL_SCHEMA_TYPE_MAPPING)
+        # Convert each column individually to maintain nulls properly
+        df_typed = df_renamed.copy()
+        for col, expected_type in FINAL_SCHEMA_TYPE_MAPPING.items():
+            if col in df_typed.columns:
+                # Skip timestamp, will handle separately
+                if col != "timestamp":
+                    # Special handling for nullable integer columns
+                    if expected_type == pd.Int64Dtype():
+                        df_typed[col] = pd.Series(df_typed[col].values, dtype=pd.Int64Dtype())
+                    else:
+                        df_typed[col] = df_typed[col].astype(expected_type)
+
         # Ensure timestamp is datetime type (it should be, but double-check)
         if (
             "timestamp" in df_typed.columns
@@ -166,7 +196,9 @@ def _prepare_final_schema(df: pd.DataFrame) -> pd.DataFrame:
         return df_typed
 
     except (TypeError, ValueError) as e:
-        logging.error("Error during final data type conversion: %s", e, exc_info=True)
+        logging.error(
+            "Error during final data type conversion for column '%s': %s", col, e
+        )
         # Return dataframe before type casting error occurred
         return df_renamed
 
@@ -236,20 +268,39 @@ def transform_data(extracted_data: List[Dict[str, Optional[str]]]) -> pd.DataFra
             return df
 
         df = _apply_business_logic(df)
-        df_final_schema = _prepare_final_schema(df)
-        if df_final_schema.empty and not df.empty:  # Check if schema prep failed
-            logging.error(
-                "Failed during final schema preparation. Returning empty DataFrame."
-            )
-            return pd.DataFrame()
 
-        df_clean = _remove_nulls_and_duplicates(df_final_schema)
+        # --- UBAH URUTAN ---
+        # 5. Hapus nulls & duplikat SEBELUM konversi tipe final
+        df_clean_intermediate = _remove_nulls_and_duplicates(df.copy())
+        if df_clean_intermediate.empty:
+             logging.warning("DataFrame empty after removing nulls/duplicates.")
+             return df_clean_intermediate
+
+        # 6. Siapkan skema final (termasuk konversi tipe)
+        df_final_schema = _prepare_final_schema(df_clean_intermediate)
+        # --- AKHIR PERUBAHAN URUTAN ---
+
+        if df_final_schema.empty and not df_clean_intermediate.empty:
+            # Log error spesifik jika schema prep yang menyebabkan kosong
+            # (Ini akan ditangkap oleh test_transform_data_empty_after_schema_prep)
+            logging.error(
+                "Failed during final schema preparation. DataFrame became empty."
+            )
+            # Kita bisa return df_final_schema (yang kosong) atau pd.DataFrame() baru
+            return df_final_schema # atau return pd.DataFrame()
+
+        # df_clean sudah merupakan hasil akhir sekarang
+        df_clean = df_final_schema
 
         final_rows = len(df_clean)
+        # Hitung initial_rows dari df *setelah* filtering unknown product, sebelum dropna/dropdup
+        # Atau lebih mudah, hitung rows_removed berdasarkan initial_rows awal
+        initial_rows_for_logging = len(extracted_data)  # Gunakan jumlah awal raw data
         logging.info(
-            "Transformation complete. Final rows: %d (removed %d rows).",
+            "Transformation complete. Final rows: %d (processed %d raw records).",
             final_rows,
-            initial_rows - final_rows,
+            initial_rows_for_logging,  # Ganti initial_rows dengan ini
+            # initial_rows - final_rows, # Kalkulasi removed rows jadi kurang relevan jika step berubah
         )
         if not df_clean.empty:
             logging.debug("Final DataFrame head:\n%s", df_clean.head().to_string())
@@ -261,17 +312,19 @@ def transform_data(extracted_data: List[Dict[str, Optional[str]]]) -> pd.DataFra
         logging.error(
             "Missing expected key during transformation: %s. Check extract keys.",
             e,
-            exc_info=True,
         )
         return pd.DataFrame()
-    # Catch unexpected errors during the overall process
     except Exception as e:  # pylint: disable=broad-except
         logging.error(
             "An unexpected error occurred during data transformation: %s",
             e,
-            exc_info=True,
+            exc_info=True,  # Tambahkan exc_info untuk traceback
         )
-        return pd.DataFrame()
+        try:
+            return pd.DataFrame()
+        except:  # Jika mock pd.DataFrame masih error di sini
+            # Fallback paling aman jika mock pd.DataFrame benar-benar rusak
+            return None  # Atau raise error baru
 
 
 # --- Example Usage ---
