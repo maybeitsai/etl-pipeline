@@ -279,16 +279,16 @@ def load_to_postgres(
         logging.error("Missing key in db_config: %s", e)
         return False
     # Catch unexpected errors during DB operations
+    # Catch unexpected errors during DB operations
     except Exception as e:  # pylint: disable=broad-except
         logging.error(
-            "An unexpected error occurred during PostgreSQL load to '%s': %s",
+            "An unexpected error occurred during PostgreSQL load to '%s': %s. PostgreSQL transaction rolled back.",
             table_name,
             e,
             exc_info=True,
         )
         if conn:
             conn.rollback()
-            logging.info("PostgreSQL transaction rolled back due to unexpected error.")
         return False
     finally:
         if conn:
