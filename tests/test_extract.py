@@ -1,20 +1,18 @@
 # tests/test_extract.py
-# (Tidak ada perubahan signifikan yang diperlukan untuk cakupan extract.py,
-# karena baris yang hilang ada di blok __main__)
 """
 Unit tests for the utils.extract module.
 """
 
 import logging
 import time
+from typing import List, Optional
 from unittest.mock import MagicMock, call, patch
 
 import pytest
 import requests
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, Tag
 from requests.exceptions import HTTPError, RequestException, Timeout
 
-# Assuming utils is importable from the project root
 from utils import extract
 from utils.constants import REQUEST_DELAY, USER_AGENT
 
@@ -115,10 +113,8 @@ SAMPLE_PAGE_HTML_EMPTY_LIST = """
 
 
 # --- Tests for _parse_product_card ---
-
-
 @pytest.mark.parametrize(
-    "html, expected_dict, log_warnings",
+    "html_input, expected_dict, expected_warnings",
     [
         (
             SAMPLE_CARD_HTML_FULL,
@@ -187,19 +183,23 @@ SAMPLE_PAGE_HTML_EMPTY_LIST = """
         ),
         (
             SAMPLE_CARD_HTML_NO_TITLE,
-            None,  # Expect None when title is missing
+            None,
             ["Could not find valid product title"],
         ),
     ],
 )
-def test_parse_product_card(html, expected_dict, log_warnings, caplog):
+def test_parse_product_card(
+    html_input: str,
+    expected_dict: Optional[dict],
+    expected_warnings: List[str],
+    caplog,
+):
     """Tests _parse_product_card with various HTML structures."""
     # Arrange
-    soup = BeautifulSoup(html, "html.parser")
-    # Handle potential None card if HTML is invalid for find
+    soup = BeautifulSoup(html_input, "html.parser")
+    # Find the card; it should exist even if inner elements are missing
     card = soup.find("div", class_="collection-card")
-    if card is None and html == SAMPLE_CARD_HTML_NO_TITLE: # Special case for testing None return
-         card = BeautifulSoup(html, "html.parser") # Pass the whole soup if card isn't found as expected
+    assert isinstance(card, Tag)
 
     test_url = "http://test.com/page1"
     caplog.set_level(logging.WARNING)
@@ -210,19 +210,21 @@ def test_parse_product_card(html, expected_dict, log_warnings, caplog):
     # Assert
     assert result == expected_dict
     # Check logs only if warnings are expected
-    if log_warnings:
-        for warning_msg in log_warnings:
+    if expected_warnings:
+        for warning_msg in expected_warnings:
             assert warning_msg in caplog.text
+    else:
+        # Check that no unexpected warnings were logged
+        for record in caplog.records:
+            assert record.levelno < logging.WARNING
 
 
 # --- Tests for extract_product_data ---
-
-
 @patch("utils.extract.requests.get")
 def test_extract_product_data_success(mock_get, caplog):
     """Tests successful extraction from a page with multiple products."""
     # Arrange
-    mock_response = MagicMock()
+    mock_response = MagicMock(spec=requests.Response)
     mock_response.status_code = 200
     mock_response.text = SAMPLE_PAGE_HTML_MULTIPLE_CARDS
     mock_response.raise_for_status.return_value = None
@@ -235,16 +237,22 @@ def test_extract_product_data_success(mock_get, caplog):
 
     # Assert
     mock_get.assert_called_once_with(
-        test_url, headers={"User-Agent": USER_AGENT}, timeout=extract.REQUEST_TIMEOUT
+        test_url,
+        headers={"User-Agent": USER_AGENT},
+        timeout=extract.REQUEST_TIMEOUT,
     )
     mock_response.raise_for_status.assert_called_once()
+    assert result is not None
     assert len(result) == 3
     assert result[0]["title"] == "Awesome T-Shirt"
     assert result[1]["title"] == "Cool Hat"
     assert result[2]["title"] == "Fancy Pants"
     assert f"Successfully fetched HTML content from {test_url}" in caplog.text
     assert f"Found 3 product cards on page {test_url}" in caplog.text
-    assert f"Successfully extracted data for 3 products from page {test_url}" in caplog.text
+    assert (
+        f"Successfully extracted data for 3 products from page {test_url}"
+        in caplog.text
+    )
 
 
 @patch("utils.extract.requests.get")
@@ -262,7 +270,9 @@ def test_extract_product_data_request_timeout(mock_get, caplog):
     assert result is None
     assert f"Timeout occurred while fetching URL {test_url}" in caplog.text
     mock_get.assert_called_once_with(
-        test_url, headers={"User-Agent": USER_AGENT}, timeout=extract.REQUEST_TIMEOUT
+        test_url,
+        headers={"User-Agent": USER_AGENT},
+        timeout=extract.REQUEST_TIMEOUT,
     )
 
 
@@ -270,7 +280,7 @@ def test_extract_product_data_request_timeout(mock_get, caplog):
 def test_extract_product_data_http_error(mock_get, caplog):
     """Tests handling of HTTPError (e.g., 404 Not Found)."""
     # Arrange
-    mock_response = MagicMock()
+    mock_response = MagicMock(spec=requests.Response)
     mock_response.status_code = 404
     mock_response.raise_for_status.side_effect = HTTPError("404 Client Error")
     mock_get.return_value = mock_response
@@ -306,7 +316,7 @@ def test_extract_product_data_other_request_exception(mock_get, caplog):
 def test_extract_product_data_no_collection_list(mock_get, caplog):
     """Tests handling when the main collection list div is missing."""
     # Arrange
-    mock_response = MagicMock()
+    mock_response = MagicMock(spec=requests.Response)
     mock_response.status_code = 200
     mock_response.text = SAMPLE_PAGE_HTML_NO_LIST
     mock_response.raise_for_status.return_value = None
@@ -320,16 +330,15 @@ def test_extract_product_data_no_collection_list(mock_get, caplog):
     # Assert
     assert result == []
     assert (
-        f"Could not find collection list div with id='collectionList' on {test_url}."
-        in caplog.text
-    )
+        "Could not find collection list div with id='collectionList' " f"on {test_url}."
+    ) in caplog.text
 
 
 @patch("utils.extract.requests.get")
 def test_extract_product_data_empty_collection_list(mock_get, caplog):
     """Tests handling when the collection list is present but empty."""
     # Arrange
-    mock_response = MagicMock()
+    mock_response = MagicMock(spec=requests.Response)
     mock_response.status_code = 200
     mock_response.text = SAMPLE_PAGE_HTML_EMPTY_LIST
     mock_response.raise_for_status.return_value = None
@@ -343,9 +352,8 @@ def test_extract_product_data_empty_collection_list(mock_get, caplog):
     # Assert
     assert result == []
     assert (
-        f"Found collection list, but no product cards inside on page {test_url}."
-        in caplog.text
-    )
+        "Found collection list, but no product cards inside on page " f"{test_url}."
+    ) in caplog.text
 
 
 @patch("utils.extract.requests.get")
@@ -353,9 +361,9 @@ def test_extract_product_data_empty_collection_list(mock_get, caplog):
 def test_extract_product_data_parsing_error(mock_bs, mock_get, caplog):
     """Tests handling of unexpected errors during BeautifulSoup parsing."""
     # Arrange
-    mock_response = MagicMock()
+    mock_response = MagicMock(spec=requests.Response)
     mock_response.status_code = 200
-    mock_response.text = "<html"  # Incomplete HTML to potentially cause issues
+    mock_response.text = "<htm"  # Incomplete HTML
     mock_response.raise_for_status.return_value = None
     mock_get.return_value = mock_response
     mock_bs.side_effect = Exception("Parsing failed badly")
@@ -366,15 +374,12 @@ def test_extract_product_data_parsing_error(mock_bs, mock_get, caplog):
     result = extract.extract_product_data(test_url)
 
     # Assert
-    # Exception occurs during BeautifulSoup instantiation, before product list is populated
-    assert result == [] # Function returns products list which is empty at this point
+    assert result == []
     assert f"An error occurred during HTML parsing on page {test_url}" in caplog.text
     assert "Parsing failed badly" in caplog.text
 
 
 # --- Tests for scrape_all_pages ---
-
-
 @patch("utils.extract.extract_product_data")
 @patch("utils.extract.time.sleep")
 def test_scrape_all_pages_success(mock_sleep, mock_extract, caplog):
@@ -454,18 +459,18 @@ def test_scrape_all_pages_with_failures_and_empty(mock_sleep, mock_extract, capl
     mock_extract.assert_has_calls(expected_calls)
     assert mock_extract.call_count == max_pages
 
-    # Check calls to time.sleep (called after page 1 success, not after page 2 fail, after page 3 empty/success)
+    # Check calls to time.sleep
     # Sleep is called if page_num < max_pages AND page_data is not None.
-    # Page 1: page_data is not None -> sleep
+    # Page 1: page_data is list -> sleep
     # Page 2: page_data is None -> no sleep
-    # Page 3: page_data is not None (it's []) -> sleep
+    # Page 3: page_data is list (empty) -> sleep
     assert mock_sleep.call_count == 2
     mock_sleep.assert_has_calls([call(REQUEST_DELAY), call(REQUEST_DELAY)])
 
     assert "Failed to fetch/process page 2 (http://complex.com/page2)" in caplog.text
     assert "No products found on page 3 (http://complex.com/page3)" in caplog.text
     assert "Accumulated 1 products after scraping page 1." in caplog.text
-    # No accumulation message for page 2 or 3
+    # No accumulation message for page 2 (failed) or 3 (empty)
     assert "Accumulated 2 products after scraping page 4." in caplog.text
     assert f"Finished scraping {max_pages} pages." in caplog.text
 
@@ -485,4 +490,4 @@ def test_scrape_all_pages_single_page(mock_sleep, mock_extract):
     # Assert
     assert len(result) == 1
     mock_extract.assert_called_once_with("http://single.com/")
-    mock_sleep.assert_not_called()  # No delay after the last page
+    mock_sleep.assert_not_called()
