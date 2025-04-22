@@ -1,4 +1,3 @@
-```markdown
 # ETL Pipeline for Fashion Product Data
 
 ## Overview
@@ -237,4 +236,3 @@ Please open an issue first to discuss significant changes or new features.
 ## License
 
 This project is licensed under the MIT License. See the `LICENSE` file for details (if one exists - consider adding one).
-```
