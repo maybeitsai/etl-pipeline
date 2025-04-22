@@ -79,8 +79,6 @@ def clean_colors(colors_str: Optional[str]) -> Optional[int]:
 
 
 # --- Transformation Steps ---
-
-
 def _initial_clean_and_parse(df: pd.DataFrame) -> pd.DataFrame:
     """Applies initial string stripping and runs cleaning functions."""
     logging.debug("Applying initial cleaning and parsing.")
@@ -232,6 +230,26 @@ def _remove_nulls_and_duplicates(df: pd.DataFrame) -> pd.DataFrame:
             "Removed %d duplicate rows.", rows_before_duplicates - rows_after_duplicates
         )
 
+    # Tambahkan: Hapus baris yang memiliki NULL pada kolom price, rating, atau colors
+    value_columns = [
+        "cleaned_price_usd",
+        "price_idr",
+        "cleaned_rating",
+        "cleaned_colors",
+    ]
+    value_columns_exist = [col for col in value_columns if col in df.columns]
+
+    if value_columns_exist:
+        rows_before_value_na = len(df)
+        df.dropna(subset=value_columns_exist, inplace=True)
+        rows_after_value_na = len(df)
+        if rows_before_value_na > rows_after_value_na:
+            logging.info(
+                "Removed %d rows with null values in data columns (%s).",
+                rows_before_value_na - rows_after_value_na,
+                value_columns_exist,
+            )
+
     return df
 
 
@@ -269,13 +287,13 @@ def transform_data(extracted_data: List[Dict[str, Optional[str]]]) -> pd.DataFra
 
         df = _apply_business_logic(df)
 
-        # 5. Hapus nulls & duplikat SEBELUM konversi tipe final
+        # Hapus nulls & duplikat SEBELUM konversi tipe final
         df_clean_intermediate = _remove_nulls_and_duplicates(df.copy())
         if df_clean_intermediate.empty:
             logging.warning("DataFrame empty after removing nulls/duplicates.")
             return df_clean_intermediate
 
-        # 6. Siapkan skema final (termasuk konversi tipe)
+        # Siapkan skema final (termasuk konversi tipe)
         df_final_schema = _prepare_final_schema(df_clean_intermediate)
 
         if df_final_schema.empty and not df_clean_intermediate.empty:
