@@ -260,6 +260,54 @@ def test_clean_colors(colors_str, expected, caplog):
             else:
                  assert f"Could not parse colors: '{colors_str}'" in caplog.text
 
+@patch('utils.transform.re.search') # <-- Patch re.search di dalam modul transform.py
+def test_clean_colors_triggers_value_error(mock_re_search, caplog):
+    """
+    Test clean_colors handles ValueError raised during re.search.
+    """
+    # Konfigurasi mock untuk memunculkan ValueError saat dipanggil
+    mock_re_search.side_effect = ValueError("Forced ValueError from regex")
+
+    input_str = "this is a valid string input" # Harus berupa string
+
+    with caplog.at_level(logging.DEBUG):
+        result = clean_colors(input_str)
+
+    assert result is None
+    # Pastikan log berasal dari blok except
+    assert f"Could not parse colors: '{input_str}'." in caplog.text
+    # Pastikan mock dipanggil
+    mock_re_search.assert_called_once_with(r"(\d+)", input_str)
+
+# Tes untuk memicu TypeError di dalam blok try
+@patch('utils.transform.re.search') # <-- Patch re.search di dalam modul transform.py
+def test_clean_colors_triggers_type_error(mock_re_search, caplog):
+    """
+    Test clean_colors handles TypeError raised during re.search.
+    """
+    # Konfigurasi mock untuk memunculkan TypeError saat dipanggil
+    mock_re_search.side_effect = TypeError("Forced TypeError from regex")
+
+    input_str = "another valid string input" # Harus berupa string
+
+    with caplog.at_level(logging.DEBUG):
+        result = clean_colors(input_str)
+
+    assert result is None
+    # Pastikan log berasal dari blok except
+    assert f"Could not parse colors: '{input_str}'." in caplog.text
+     # Pastikan mock dipanggil
+    mock_re_search.assert_called_once_with(r"(\d+)", input_str)
+
+# Anda mungkin juga ingin mempertahankan tes asli Anda untuk input non-string (jika belum ada)
+def test_clean_colors_non_string_input(caplog):
+    """Test clean_colors with non-string input."""
+    non_string_input = 12345 # Contoh input bukan string
+    with caplog.at_level(logging.DEBUG):
+        result = clean_colors(non_string_input)
+    assert result is None
+    # Log ini berasal dari pemeriksaan isinstance awal
+    assert f"Could not parse colors: '{non_string_input}'." in caplog.text
 
 # --- Tests for Transformation Steps ---
 
@@ -487,6 +535,37 @@ def test_prepare_final_schema():
                  assert pd.api.types.is_dtype_equal(actual_dtype, expected_pd_type), \
                         f"Column '{col}' expected {expected_pd_type}, got {actual_dtype}"
 
+def test_prepare_final_schema_int64_dtype_conversion():
+    """Test Int64Dtype conversion in _prepare_final_schema."""
+    now = pd.Timestamp.now(tz="Asia/Jakarta")
+    df_intermediate = pd.DataFrame({
+        "title": ["Product A"],
+        "price_idr": [10000.0],
+        "cleaned_rating": [4.5],
+        "cleaned_colors": [3],  # This will be converted to Int64Dtype
+        "size": ["M"],
+        "gender": ["Men"],
+        "image_url": ["urlA"],
+        "timestamp": [now],
+    })
+    
+    # Mock FINAL_SCHEMA_TYPE_MAPPING to ensure colors uses Int64Dtype
+    schema_mapping = {
+        "title": str,
+        "price": float,
+        "rating": float,
+        "colors": pd.Int64Dtype(),  # Force Int64Dtype conversion
+        "size": str,
+        "gender": str,
+        "image_url": str,
+        "timestamp": "datetime64[ns, Asia/Jakarta]",
+    }
+    
+    with patch("utils.transform.FINAL_SCHEMA_TYPE_MAPPING", schema_mapping):
+        df_final = _prepare_final_schema(df_intermediate.copy())
+    
+    # Verify the colors column was converted to Int64Dtype
+    assert isinstance(df_final["colors"].dtype, pd.Int64Dtype)
 
 def test_prepare_final_schema_missing_expected_cols(caplog):
     """Test schema preparation when expected columns are missing."""
@@ -748,3 +827,35 @@ def test_transform_data_unexpected_error(caplog):
     assert "An unexpected error occurred during data transformation" in caplog.text
     assert "Test unexpected error" in caplog.text # Pastikan detail error ada di log
     assert mock_df.call_count == 2 # Pastikan dipanggil dua kali
+
+def test_transform_data_empty_after_nulls_duplicates(caplog):
+    """Test when DataFrame becomes empty after removing nulls and duplicates."""
+    # Mock input data where all rows have nulls in required columns
+    sample_data = [
+        {
+            "title": "Belt 7",
+            "price": "$30.00",
+            "rating": "⭐ 4.9 / 5",
+            "colors": "1 color",
+            "size": None,  # All rows have null size (required column)
+            "gender": "Unisex",
+            "image_url": "url7",
+        },
+        {
+            "title": "Hat 8",
+            "price": "$15.00",
+            "rating": "⭐ 4.2 / 5",
+            "colors": "2 colors",
+            "size": None,  # All rows have null size
+            "gender": "Unisex",
+            "image_url": "url8",
+        }
+    ]
+    
+    # Skip filtering for this test to ensure we reach the nulls/duplicates step
+    with patch("utils.transform._filter_invalid_rows", side_effect=lambda df: df):
+        with caplog.at_level(logging.WARNING):
+            result_df = transform_data(sample_data)
+    
+    assert result_df.empty
+    assert "DataFrame empty after removing nulls/duplicates." in caplog.text

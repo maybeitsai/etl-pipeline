@@ -320,11 +320,7 @@ def transform_data(extracted_data: List[Dict[str, Optional[str]]]) -> pd.DataFra
             e,
             exc_info=True,  # Tambahkan exc_info untuk traceback
         )
-        try:
-            return pd.DataFrame()
-        except:  # Jika mock pd.DataFrame masih error di sini
-            # Fallback paling aman jika mock pd.DataFrame benar-benar rusak
-            return None  # Atau raise error baru
+        return pd.DataFrame()
 
 
 # --- Example Usage ---
