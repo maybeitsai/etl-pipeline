@@ -1,7 +1,9 @@
 # utils/extract.py
 """
-Module for extracting product data from the Fashion Studio website.
-Handles fetching HTML content and parsing product information, including pagination.
+Module for extracting product data from a website.
+
+Handles fetching HTML content and parsing product information,
+including pagination.
 """
 
 import logging
@@ -9,7 +11,7 @@ import time
 from typing import Dict, List, Optional
 
 import requests
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, Tag
 from requests.exceptions import RequestException, Timeout
 
 from utils.constants import LOG_FORMAT, REQUEST_DELAY, REQUEST_TIMEOUT, USER_AGENT
@@ -18,18 +20,18 @@ logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
 
 
 def _parse_product_details(
-    details_container: BeautifulSoup, product_info: Dict[str, Optional[str]]
+    details_container: Tag, product_info: Dict[str, Optional[str]]
 ) -> None:
     """Parses rating, colors, size, and gender from the details container."""
     detail_paragraphs = details_container.find_all("p")
     found_details = set()
     for paragraph in detail_paragraphs:
-        text = paragraph.text.strip()
+        text = paragraph.get_text(strip=True)
         if "Rating:" in text and "rating" not in found_details:
             product_info["rating"] = text.split("Rating:", 1)[-1].strip()
             found_details.add("rating")
         elif "Colors" in text and "colors" not in found_details:
-            product_info["colors"] = text  # Keep "N Colors" format
+            product_info["colors"] = text
             found_details.add("colors")
         elif "Size:" in text and "size" not in found_details:
             product_info["size"] = text.split("Size:", 1)[-1].strip()
@@ -39,14 +41,12 @@ def _parse_product_details(
             found_details.add("gender")
 
 
-def _parse_product_card(
-    card: BeautifulSoup, url: str
-) -> Optional[Dict[str, Optional[str]]]:
+def _parse_product_card(card: Tag, url: str) -> Optional[Dict[str, Optional[str]]]:
     """
-    Parses a single product card BeautifulSoup object into a dictionary.
+    Parses a single product card BeautifulSoup Tag into a dictionary.
 
     Args:
-        card: The BeautifulSoup object representing the product card.
+        card: The BeautifulSoup Tag representing the product card.
         url: The URL of the page where the card was found (for logging).
 
     Returns:
@@ -65,21 +65,25 @@ def _parse_product_card(
 
     # Extract Product Name (Mandatory)
     title_tag = card.find("h3", class_="product-title")
-    if not title_tag or not title_tag.text.strip():
+    if not title_tag or not title_tag.get_text(strip=True):
         logging.warning(
-            "Could not find valid product title for a card on %s. Skipping card.", url
+            "Could not find valid product title for a card on %s. Skipping card.",
+            url,
         )
         return None
-    product_info["title"] = title_tag.text.strip()
+    product_info["title"] = title_tag.get_text(strip=True)
 
     # Extract Price
     price_tag = card.find("span", class_="price")
     if price_tag:
-        product_info["price"] = price_tag.text.strip()
+        product_info["price"] = price_tag.get_text(strip=True)
     else:
         # Check for explicit "Price Unavailable" text
         price_unavailable_tag = card.find("p", class_="price")
-        if price_unavailable_tag and "Price Unavailable" in price_unavailable_tag.text:
+        if (
+            price_unavailable_tag
+            and "Price Unavailable" in price_unavailable_tag.get_text(strip=True)
+        ):
             product_info["price"] = "Price Unavailable"
         else:
             logging.warning(
@@ -121,15 +125,16 @@ def extract_product_data(url: str) -> Optional[List[Dict[str, Optional[str]]]]:
         url: The URL of the product listing page.
 
     Returns:
-        A list of dictionaries, where each dictionary contains data for one product.
+        A list of dictionaries, each containing data for one product.
         Returns None if the request fails (e.g., timeout, HTTP error).
-        Returns an empty list if the page structure is unexpected or no products found.
+        Returns an empty list if the page structure is unexpected or no
+        products are found.
     """
-    products = []
+    products: List[Dict[str, Optional[str]]] = []
     try:
         headers = {"User-Agent": USER_AGENT}
         response = requests.get(url, headers=headers, timeout=REQUEST_TIMEOUT)
-        response.raise_for_status()  # Raises HTTPError for bad responses (4XX, 5XX)
+        response.raise_for_status()
         logging.info("Successfully fetched HTML content from %s", url)
     except Timeout:
         logging.error("Timeout occurred while fetching URL %s", url)
@@ -144,15 +149,16 @@ def extract_product_data(url: str) -> Optional[List[Dict[str, Optional[str]]]]:
 
         if not collection_list:
             logging.warning(
-                "Could not find collection list div with id='collectionList' on %s.",
+                "Could not find collection list div with id='collectionList' " "on %s.",
                 url,
             )
-            return []  # Return empty list, as page was fetched but structure differs
+            return []
 
         product_cards = collection_list.find_all("div", class_="collection-card")
         if not product_cards:
             logging.warning(
-                "Found collection list, but no product cards inside on page %s.", url
+                "Found collection list, but no product cards inside on page %s.",
+                url,
             )
             return []
 
@@ -163,10 +169,8 @@ def extract_product_data(url: str) -> Optional[List[Dict[str, Optional[str]]]]:
             if product_data:
                 products.append(product_data)
 
-    # Catching a broad exception during parsing is often necessary due to
-    # unpredictable HTML structures or potential BS4/parser issues.
-    # Use exc_info=True for detailed traceback in logs.
-    except Exception as e:  # pylint: disable=broad-except
+    # Catching broad exception during parsing for unpredictable HTML/BS4 issues.
+    except Exception as e:
         logging.error(
             "An error occurred during HTML parsing on page %s: %s",
             url,
@@ -177,7 +181,9 @@ def extract_product_data(url: str) -> Optional[List[Dict[str, Optional[str]]]]:
         return products
 
     logging.info(
-        "Successfully extracted data for %d products from page %s.", len(products), url
+        "Successfully extracted data for %d products from page %s.",
+        len(products),
+        url,
     )
     return products
 
@@ -191,7 +197,8 @@ def scrape_all_pages(base_url: str, max_pages: int) -> List[Dict[str, Optional[s
         max_pages: The maximum number of pages to scrape.
 
     Returns:
-        A list containing product data aggregated from all successfully scraped pages.
+        A list containing product data aggregated from all successfully
+        scraped pages.
     """
     all_products: List[Dict[str, Optional[str]]] = []
     normalized_base_url = base_url.rstrip("/")
@@ -207,7 +214,9 @@ def scrape_all_pages(base_url: str, max_pages: int) -> List[Dict[str, Optional[s
 
         if page_data is None:
             logging.error(
-                "Failed to fetch/process page %d (%s). Skipping.", page_num, current_url
+                "Failed to fetch/process page %d (%s). Skipping.",
+                page_num,
+                current_url,
             )
         elif not page_data:
             logging.warning(
@@ -215,7 +224,8 @@ def scrape_all_pages(base_url: str, max_pages: int) -> List[Dict[str, Optional[s
                 page_num,
                 current_url,
             )
-            # Could add logic here to break early if desired
+            # Data is empty list, extend is safe but does nothing
+            all_products.extend(page_data)
         else:
             all_products.extend(page_data)
             logging.info(
@@ -224,7 +234,7 @@ def scrape_all_pages(base_url: str, max_pages: int) -> List[Dict[str, Optional[s
                 page_num,
             )
 
-        # Delay only if not the last page and if scraping continues
+        # Delay only if not the last page and if scraping was successful or empty
         if page_num < max_pages and page_data is not None:
             time.sleep(REQUEST_DELAY)
 

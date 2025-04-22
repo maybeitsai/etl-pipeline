@@ -11,7 +11,7 @@ REQUEST_DELAY = 0.3  # seconds between page requests
 
 # Transformation Constants
 USD_TO_IDR_RATE = 16000
-# Define the final schema and data types expected after transformation
+# Final schema and data types expected after transformation
 FINAL_SCHEMA_TYPE_MAPPING = {
     "title": str,
     "price": float,  # IDR Price
@@ -22,17 +22,17 @@ FINAL_SCHEMA_TYPE_MAPPING = {
     "image_url": str,
     # 'timestamp' is handled separately to ensure datetime type
 }
-# Define columns that must not be null after transformation
+# Columns that must not be null after transformation
 REQUIRED_COLUMNS = list(FINAL_SCHEMA_TYPE_MAPPING.keys()) + ["timestamp"]
 
 # Logging Format
 LOG_FORMAT = "%(asctime)s - %(levelname)s - %(filename)s:%(lineno)d - %(message)s"
 
-# CSV Filepath (Example, should be configurable or passed as argument)
+# CSV Filepath (Example, should be configurable)
 CSV_FILEPATH = "products.csv"
 
-# Google Sheets (Worksheet name constant)
+# Google Sheets Worksheet name
 WORKSHEET_NAME = "products"
 
-# PostgreSQL (Table name constant)
+# PostgreSQL Table name
 POSTGRES_TABLE_NAME = "products"

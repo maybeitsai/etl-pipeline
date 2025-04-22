@@ -36,7 +36,7 @@ def load_to_csv(df: pd.DataFrame, filepath: str) -> bool:
     """
     if df.empty:
         logging.warning("DataFrame is empty. Skipping CSV save to %s.", filepath)
-        return True  # No error, just nothing to save.
+        return True
 
     try:
         dir_name = os.path.dirname(filepath)
@@ -50,8 +50,8 @@ def load_to_csv(df: pd.DataFrame, filepath: str) -> bool:
     except (IOError, OSError) as e:
         logging.error("Error saving data to CSV file %s: %s", filepath, e)
         return False
-    # Catch unexpected errors during CSV writing (e.g., pandas issues)
-    except Exception as e:  # pylint: disable=broad-except
+    # Catch unexpected errors during CSV writing
+    except Exception as e:
         logging.error(
             "An unexpected error occurred during CSV saving to %s: %s",
             filepath,
@@ -62,8 +62,6 @@ def load_to_csv(df: pd.DataFrame, filepath: str) -> bool:
 
 
 # --- Load to Google Sheets ---
-
-
 def _prepare_gsheets_data(df: pd.DataFrame) -> list:
     """Prepares DataFrame data for gspread upload."""
     df_gspread = df.copy()
@@ -75,9 +73,7 @@ def _prepare_gsheets_data(df: pd.DataFrame) -> list:
             "%Y-%m-%d %H:%M:%S%z"
         )
 
-    # Replace NaN/NaT with None (gspread handles None as empty cell)
     # Convert all data to object type before replacing to avoid potential issues
-    # with pandas internal types, then convert to list of lists.
     df_gspread = df_gspread.astype(object).where(pd.notnull(df_gspread), None)
     return [df_gspread.columns.values.tolist()] + df_gspread.values.tolist()
 
@@ -106,7 +102,7 @@ def load_to_gsheets(
             sheet_id,
             worksheet_name,
         )
-        return True  # No error, just nothing to load.
+        return True
 
     try:
         scopes = ["https://www.googleapis.com/auth/spreadsheets"]
@@ -145,7 +141,7 @@ def load_to_gsheets(
         logging.error("Value error during Google Sheets operation: %s", e)
         return False
     # Catch unexpected errors during Sheets interaction
-    except Exception as e:  # pylint: disable=broad-except
+    except Exception as e:
         logging.error(
             "An unexpected error occurred during Google Sheets loading: %s",
             e,
@@ -160,9 +156,9 @@ def _get_postgres_schema(df: pd.DataFrame) -> sql.SQL:
     type_map = {
         "object": "TEXT",
         "int64": "INTEGER",
-        "float64": "REAL",  # Consider NUMERIC for exact decimals
+        "float64": "REAL",
         "bool": "BOOLEAN",
-        "datetime64[ns]": "TIMESTAMP",  # Timezone naive
+        "datetime64[ns]": "TIMESTAMP",
     }
 
     column_definitions = []
@@ -170,12 +166,12 @@ def _get_postgres_schema(df: pd.DataFrame) -> sql.SQL:
         pg_type = None
         # Handle timezone-aware timestamp specifically
         if pd.api.types.is_datetime64_any_dtype(dtype) and getattr(dtype, "tz", None):
-            pg_type = "TIMESTAMPTZ"  # Use TIMESTAMP WITH TIME ZONE
+            pg_type = "TIMESTAMPTZ"
         elif dtype.name in type_map:
             pg_type = type_map[dtype.name]
             # Refine float to NUMERIC for price column if desired
             if col_name == "price" and pg_type == "REAL":
-                pg_type = "NUMERIC(12, 2)"  # Example precision
+                pg_type = "NUMERIC(12, 2)"
         else:
             logging.warning(
                 "Unmapped dtype '%s' for column '%s'. Defaulting to TEXT.",
@@ -214,7 +210,7 @@ def load_to_postgres(
     conn = None
     try:
         conn = psycopg2.connect(**db_config)
-        conn.autocommit = False  # Use transactions
+        conn.autocommit = False
         with conn.cursor() as cursor:
             logging.info(
                 "Connected to PostgreSQL database '%s'", db_config.get("dbname")
@@ -235,14 +231,13 @@ def load_to_postgres(
             cursor.execute(truncate_query)
             logging.info("Truncated table '%s'.", table_name)
 
-            # Prepare data for insertion (handle NaN/NaT -> None)
             # Use astype(object) before replacing NaN to handle mixed types robustly
             df_prepared = df.astype(object).where(pd.notnull(df), None)
             data_tuples = [tuple(x) for x in df_prepared.to_numpy()]
 
             if not data_tuples:
                 logging.info("No valid data tuples to insert into PostgreSQL.")
-                conn.commit()  # Commit transaction (table created/truncated)
+                conn.commit()
                 return True
 
             # Prepare and execute bulk insert
@@ -259,7 +254,7 @@ def load_to_postgres(
                 table_name,
             )
 
-        conn.commit()  # Commit transaction
+        conn.commit()
         logging.info(
             "Successfully loaded %d records into PostgreSQL table '%s'. Committed.",
             len(data_tuples),
@@ -279,8 +274,7 @@ def load_to_postgres(
         logging.error("Missing key in db_config: %s", e)
         return False
     # Catch unexpected errors during DB operations
-    # Catch unexpected errors during DB operations
-    except Exception as e:  # pylint: disable=broad-except
+    except Exception as e:
         logging.error(
             "An unexpected error occurred during PostgreSQL load to '%s': %s. PostgreSQL transaction rolled back.",
             table_name,

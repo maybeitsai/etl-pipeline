@@ -102,12 +102,12 @@ def _add_timestamp(df: pd.DataFrame) -> pd.DataFrame:
         now_utc = pd.Timestamp.now(tz="UTC")
         now_jakarta = now_utc.tz_convert("Asia/Jakarta")
         df["timestamp"] = now_jakarta
-    except Exception as tz_error:  # Catch potential timezone library errors
+    except Exception as tz_error:
         logging.warning(
             "Failed to convert timezone to Asia/Jakarta: %s. Using UTC.", tz_error
         )
         now_utc = pd.Timestamp.now(tz="UTC")
-        df["timestamp"] = now_utc  # Fallback to UTC
+        df["timestamp"] = now_utc
     return df
 
 
@@ -135,8 +135,6 @@ def _apply_business_logic(df: pd.DataFrame) -> pd.DataFrame:
     """Applies business rules like currency conversion."""
     logging.debug("Applying business logic (currency conversion).")
     df["price_idr"] = df["cleaned_price_usd"] * USD_TO_IDR_RATE
-    # Optional: Rounding IDR price
-    # df['price_idr'] = df['price_idr'].round(0)
     return df
 
 
@@ -181,7 +179,9 @@ def _prepare_final_schema(df: pd.DataFrame) -> pd.DataFrame:
                 if col != "timestamp":
                     # Special handling for nullable integer columns
                     if expected_type == pd.Int64Dtype():
-                        df_typed[col] = pd.Series(df_typed[col].values, dtype=pd.Int64Dtype())
+                        df_typed[col] = pd.Series(
+                            df_typed[col].values, dtype=pd.Int64Dtype()
+                        )
                     else:
                         df_typed[col] = df_typed[col].astype(expected_type)
 
@@ -269,38 +269,33 @@ def transform_data(extracted_data: List[Dict[str, Optional[str]]]) -> pd.DataFra
 
         df = _apply_business_logic(df)
 
-        # --- UBAH URUTAN ---
         # 5. Hapus nulls & duplikat SEBELUM konversi tipe final
         df_clean_intermediate = _remove_nulls_and_duplicates(df.copy())
         if df_clean_intermediate.empty:
-             logging.warning("DataFrame empty after removing nulls/duplicates.")
-             return df_clean_intermediate
+            logging.warning("DataFrame empty after removing nulls/duplicates.")
+            return df_clean_intermediate
 
         # 6. Siapkan skema final (termasuk konversi tipe)
         df_final_schema = _prepare_final_schema(df_clean_intermediate)
-        # --- AKHIR PERUBAHAN URUTAN ---
 
         if df_final_schema.empty and not df_clean_intermediate.empty:
             # Log error spesifik jika schema prep yang menyebabkan kosong
-            # (Ini akan ditangkap oleh test_transform_data_empty_after_schema_prep)
             logging.error(
                 "Failed during final schema preparation. DataFrame became empty."
             )
             # Kita bisa return df_final_schema (yang kosong) atau pd.DataFrame() baru
-            return df_final_schema # atau return pd.DataFrame()
+            return df_final_schema
 
         # df_clean sudah merupakan hasil akhir sekarang
         df_clean = df_final_schema
 
         final_rows = len(df_clean)
         # Hitung initial_rows dari df *setelah* filtering unknown product, sebelum dropna/dropdup
-        # Atau lebih mudah, hitung rows_removed berdasarkan initial_rows awal
-        initial_rows_for_logging = len(extracted_data)  # Gunakan jumlah awal raw data
+        initial_rows_for_logging = len(extracted_data)
         logging.info(
             "Transformation complete. Final rows: %d (processed %d raw records).",
             final_rows,
-            initial_rows_for_logging,  # Ganti initial_rows dengan ini
-            # initial_rows - final_rows, # Kalkulasi removed rows jadi kurang relevan jika step berubah
+            initial_rows_for_logging,
         )
         if not df_clean.empty:
             logging.debug("Final DataFrame head:\n%s", df_clean.head().to_string())
@@ -314,11 +309,11 @@ def transform_data(extracted_data: List[Dict[str, Optional[str]]]) -> pd.DataFra
             e,
         )
         return pd.DataFrame()
-    except Exception as e:  # pylint: disable=broad-except
+    except Exception as e:
         logging.error(
             "An unexpected error occurred during data transformation: %s",
             e,
-            exc_info=True,  # Tambahkan exc_info untuk traceback
+            exc_info=True,
         )
         return pd.DataFrame()
 
