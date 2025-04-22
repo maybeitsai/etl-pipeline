@@ -28,7 +28,7 @@ The pipeline is built using Python 3.9 and leverages libraries like `requests`, 
 
 ```
 etl-pipeline/
-├── .env.example           # Example environment variables file
+├── .env                   # Example environment variables file
 ├── main.py                # Main script to run the ETL pipeline
 ├── requirements.txt       # Project dependencies
 ├── utils/                 # Core ETL logic modules
@@ -235,4 +235,4 @@ Please open an issue first to discuss significant changes or new features.
 
 ## License
 
-This project is licensed under the MIT License. See the `LICENSE` file for details (if one exists - consider adding one).
+This project is licensed under the MIT License. See the `LICENSE` file for details.
